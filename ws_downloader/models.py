@@ -1,3 +1,5 @@
+"""Shared data models for games and workshop mods."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,6 +8,8 @@ from typing import Optional
 
 @dataclass
 class Game:
+    """Persisted metadata for a game entry."""
+
     id: str
     steam_app_id: int
     game_name: str
@@ -17,6 +21,8 @@ class Game:
 
 @dataclass
 class Mod:
+    """Persisted metadata for a Steam Workshop mod entry."""
+
     id: Optional[int]
     game_id: str
     workshop_item_id: str

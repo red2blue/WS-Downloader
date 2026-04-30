@@ -19,11 +19,14 @@ if ($Clean) {
     }
 }
 
+$localesData = "$(Resolve-Path .\locales);locales"
+
 python -m PyInstaller `
     --noconfirm `
     --clean `
     --onefile `
     --windowed `
+    --add-data $localesData `
     --name "WS Downloader" `
     --distpath dist `
     --workpath build `

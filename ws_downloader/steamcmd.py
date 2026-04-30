@@ -1,3 +1,5 @@
+"""SteamCMD discovery, execution, and file-move helpers."""
+
 from __future__ import annotations
 
 import os
@@ -10,15 +12,21 @@ from typing import Callable, Optional
 
 @dataclass
 class DownloadResult:
+    """Result returned from a SteamCMD download invocation."""
+
     exit_code: int
     output: str
 
 
 class SteamCMDManager:
+    """Locate SteamCMD and run workshop downloads through it."""
+
     def __init__(self, saved_path: str = ""):
         self.saved_path = saved_path.strip()
 
     def discover(self) -> Optional[Path]:
+        """Return the first usable SteamCMD executable found on the system."""
+
         candidates: list[Path] = []
         if self.saved_path:
             candidates.append(Path(self.saved_path))
@@ -59,6 +67,8 @@ class SteamCMDManager:
         return None
 
     def build_download_command(self, steamcmd_path: Path, app_id: int, workshop_item_id: str, install_dir: Path) -> list[str]:
+        """Build the command line used to download a workshop item."""
+
         return [
             str(steamcmd_path),
             "+login",
@@ -79,6 +89,8 @@ class SteamCMDManager:
         install_dir: Path,
         on_output: Callable[[str], None],
     ) -> DownloadResult:
+        """Run SteamCMD and stream its output to the supplied callback."""
+
         install_dir.mkdir(parents=True, exist_ok=True)
         command = self.build_download_command(steamcmd_path, app_id, workshop_item_id, install_dir)
         on_output(f"Running: {' '.join(command)}")
@@ -100,10 +112,14 @@ class SteamCMDManager:
 
     @staticmethod
     def downloaded_workshop_path(install_dir: Path, app_id: int, workshop_item_id: str) -> Path:
+        """Return the path SteamCMD writes for a downloaded workshop item."""
+
         return install_dir / "steamapps" / "workshop" / "content" / str(app_id) / str(workshop_item_id)
 
     @staticmethod
     def target_mod_path(mods_path: Path, workshop_item_id: str) -> Path:
+        """Return the final destination path for a downloaded mod."""
+
         return mods_path / str(workshop_item_id)
 
     @classmethod
@@ -114,6 +130,8 @@ class SteamCMDManager:
         app_id: int,
         workshop_item_id: str,
     ) -> Path:
+        """Move a completed download into the configured mods directory."""
+
         source_path = cls.downloaded_workshop_path(install_dir, app_id, workshop_item_id)
         if not source_path.exists():
             raise FileNotFoundError(f"Downloaded workshop folder not found: {source_path}")
@@ -127,4 +145,6 @@ class SteamCMDManager:
 
     @staticmethod
     def cleanup_temp_install_dir(install_dir: Path) -> None:
+        """Remove the temporary SteamCMD install directory."""
+
         shutil.rmtree(install_dir, ignore_errors=True)

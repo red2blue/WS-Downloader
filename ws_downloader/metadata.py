@@ -1,3 +1,5 @@
+"""Helpers for Steam Workshop URLs and remote metadata lookups."""
+
 from __future__ import annotations
 
 import json
@@ -15,6 +17,8 @@ WORKSHOP_ITEM_ID_RE = re.compile(r"^\d+$")
 
 @dataclass
 class WorkshopMetadata:
+    """Normalized metadata returned from Steam Workshop lookups."""
+
     workshop_item_id: str
     title: str
     time_updated: str
@@ -24,14 +28,20 @@ class WorkshopMetadata:
 
 
 def derive_workshop_url(app_id: int | str) -> str:
+    """Build the workshop landing page URL for a Steam app ID."""
+
     return f"https://steamcommunity.com/app/{int(app_id)}/workshop/"
 
 
 def derive_workshop_item_url(workshop_item_id: int | str) -> str:
+    """Build the detail URL for a specific Steam Workshop item."""
+
     return f"https://steamcommunity.com/sharedfiles/filedetails/?id={int(workshop_item_id)}"
 
 
 def extract_workshop_item_id(workshop_url: str) -> str:
+    """Extract a numeric Workshop item ID from a URL or path segment."""
+
     parsed = urlparse(workshop_url.strip())
     query = parse_qs(parsed.query)
     item_id = query.get("id", [""])[0].strip()
@@ -45,6 +55,8 @@ def extract_workshop_item_id(workshop_url: str) -> str:
 
 
 def format_unix_timestamp(value: int | float | str | None) -> str:
+    """Convert a Unix timestamp to an ISO-8601 UTC string."""
+
     if value in (None, "", 0):
         return ""
     timestamp = int(float(value))
@@ -52,6 +64,8 @@ def format_unix_timestamp(value: int | float | str | None) -> str:
 
 
 def fetch_workshop_metadata(workshop_item_id: str, timeout_seconds: int = 20) -> Optional[WorkshopMetadata]:
+    """Fetch published file metadata from the Steam Web API."""
+
     endpoint = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
     payload = f"itemcount=1&publishedfileids[0]={workshop_item_id}".encode("utf-8")
     request = Request(
@@ -84,6 +98,8 @@ def fetch_workshop_metadata(workshop_item_id: str, timeout_seconds: int = 20) ->
 
 
 def fetch_public_app_name(app_id: int, timeout_seconds: int = 20) -> str:
+    """Fetch the public store name for a Steam app ID."""
+
     endpoint = f"https://store.steampowered.com/api/appdetails?appids={int(app_id)}&l=en"
     request = Request(endpoint, method="GET")
     try:

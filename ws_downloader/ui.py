@@ -1,22 +1,31 @@
+"""Tkinter user interface for WS Downloader."""
+
 from __future__ import annotations
 
 import queue
+import locale as py_locale
 import threading
 import uuid
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, StringVar, Tk, Toplevel, filedialog, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, X, Label, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 
 from .config import APP_NAME, get_app_paths
+from .i18n import DEFAULT_LANGUAGE, TranslationManager
 from .metadata import derive_workshop_item_url, derive_workshop_url, fetch_public_app_name, fetch_workshop_metadata
 from .models import Game, Mod
 from .steamcmd import SteamCMDManager
 from .storage import Database, GameStore, create_mod, game_id_from_appid, utc_now
 
 
+LANGUAGE_CODES = ("de", "en")
+
+
 def center_window_over_parent(parent: Tk, window: Toplevel) -> None:
+    """Center a child window over its parent."""
+
     window.update_idletasks()
     parent.update_idletasks()
     parent_x = parent.winfo_rootx()
@@ -30,11 +39,94 @@ def center_window_over_parent(parent: Tk, window: Toplevel) -> None:
     window.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
 
+class Tooltip:
+    """Small hover tooltip for Tkinter widgets."""
+
+    def __init__(self, widget, text_factory, delay_ms: int = 250):
+        self.widget = widget
+        self.text_factory = text_factory
+        self.delay_ms = delay_ms
+        self._after_id: str | None = None
+        self._window: Toplevel | None = None
+        self._label = None
+        self.widget.bind("<Enter>", self._schedule_show, add=True)
+        self.widget.bind("<Leave>", self._hide, add=True)
+        self.widget.bind("<ButtonPress>", self._hide, add=True)
+
+    def _schedule_show(self, _event=None) -> None:
+        self._cancel_pending()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel_pending(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._window is not None:
+            return
+        text = self.text_factory()
+        if not text:
+            return
+        window = Toplevel(self.widget)
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.configure(bg="#1f1f1f")
+        try:
+            x = self.widget.winfo_pointerx() + 16
+            y = self.widget.winfo_pointery() + 16
+        except Exception:
+            x = self.widget.winfo_rootx() + 16
+            y = self.widget.winfo_rooty() + 16
+        window.update_idletasks()
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        tooltip_width = 320
+        tooltip_height = 0
+        if x + tooltip_width > screen_width:
+            x = max(0, screen_width - tooltip_width - 12)
+        if y + 80 > screen_height:
+            y = max(0, screen_height - 80 - 12)
+        window.geometry(f"+{x}+{y}")
+        container = ttk.Frame(window, padding=1)
+        container.pack()
+        label = Label(
+            container,
+            text=text,
+            justify="left",
+            wraplength=tooltip_width,
+            padx=8,
+            pady=5,
+            bg="#1f1f1f",
+            fg="#f2f2f2",
+            relief="solid",
+            borderwidth=1,
+        )
+        label.pack()
+        self._window = window
+        self._label = label
+
+    def _hide(self, _event=None) -> None:
+        self._cancel_pending()
+        if self._window is not None:
+            self._window.destroy()
+            self._window = None
+            self._label = None
+
+
 class GameDialog:
+    """Dialog for creating or editing a game entry."""
+
     def __init__(self, parent, title: str, game: Game | None = None):
         self.parent = parent
+        self.tr = parent.i18n.translate
         self.is_edit = game is not None
         self.result: dict[str, str] | None = None
+        self._tooltips: list[Tooltip] = []
         self.window = Toplevel(parent)
         self.window.title(title)
         self.window.transient(parent)
@@ -51,27 +143,29 @@ class GameDialog:
         frame.pack(fill=BOTH, expand=True)
 
         rows = [
-            ("Steam AppID", self.appid_var, False),
-            ("Mods Path", self.mods_path_var, False),
+            (self.tr("dialog.game.appid"), self.appid_var, False),
+            (self.tr("dialog.game.mods_path"), self.mods_path_var, False),
         ]
 
         for idx, (label, variable, readonly) in enumerate(rows):
             ttk.Label(frame, text=label).grid(row=idx, column=0, sticky="w", pady=4)
             entry = ttk.Entry(frame, textvariable=variable, width=48)
             entry.grid(row=idx, column=1, sticky="ew", pady=4)
-            if label == "Mods Path":
-                ttk.Button(frame, text="Browse", command=self._browse_path).grid(row=idx, column=2, padx=(8, 0))
+            if label == self.tr("dialog.game.mods_path"):
+                browse_button = ttk.Button(frame, text=self.tr("buttons.browse"), command=self._browse_path)
+                browse_button.grid(row=idx, column=2, padx=(8, 0))
+                self._tooltips.append(Tooltip(browse_button, lambda: self.tr("tooltip.browse_mods_path")))
             if readonly and self.is_edit:
                 entry.state(["readonly"])
 
-        ttk.Label(frame, text="Game name and workshop URL are derived automatically.").grid(
+        ttk.Label(frame, text=self.tr("dialog.game.derived_info")).grid(
             row=len(rows), column=0, columnspan=3, sticky="w", pady=(6, 0)
         )
 
         button_row = ttk.Frame(frame)
         button_row.grid(row=len(rows) + 1, column=0, columnspan=3, sticky="e", pady=(10, 0))
-        ttk.Button(button_row, text="Cancel", command=self._cancel).pack(side=RIGHT, padx=(8, 0))
-        ttk.Button(button_row, text="Save", command=self._save).pack(side=RIGHT)
+        ttk.Button(button_row, text=self.tr("buttons.cancel"), command=self._cancel).pack(side=RIGHT, padx=(8, 0))
+        ttk.Button(button_row, text=self.tr("buttons.save"), command=self._save).pack(side=RIGHT)
         frame.columnconfigure(1, weight=1)
         self.window.protocol("WM_DELETE_WINDOW", self._cancel)
         self.window.bind("<Return>", lambda _event: self._save())
@@ -79,7 +173,7 @@ class GameDialog:
         center_window_over_parent(parent, self.window)
 
     def _browse_path(self) -> None:
-        folder = filedialog.askdirectory(parent=self.window, title="Choose mods path")
+        folder = filedialog.askdirectory(parent=self.window, title=self.tr("dialog.game.mods_path_title"))
         if folder:
             self.mods_path_var.set(folder)
 
@@ -87,10 +181,10 @@ class GameDialog:
         app_id_text = self.appid_var.get().strip()
         mods_path = self.mods_path_var.get().strip()
         if not app_id_text.isdigit():
-            messagebox.showerror(APP_NAME, "Steam AppID must be numeric.", parent=self.window)
+            messagebox.showerror(APP_NAME, self.tr("message.appid_numeric"), parent=self.window)
             return
         if not mods_path:
-            messagebox.showerror(APP_NAME, "Mods path is required.", parent=self.window)
+            messagebox.showerror(APP_NAME, self.tr("message.mods_path_required"), parent=self.window)
             return
         self.result = {"steam_app_id": app_id_text, "mods_path": mods_path}
         self.window.destroy()
@@ -101,9 +195,13 @@ class GameDialog:
 
 
 class ModDialog:
+    """Dialog for creating or editing a workshop item entry."""
+
     def __init__(self, parent, title: str, mod: Mod | None = None):
         self.parent = parent
+        self.tr = parent.i18n.translate
         self.result: dict[str, str] | None = None
+        self._tooltips: list[Tooltip] = []
         self.window = Toplevel(parent)
         self.window.title(title)
         self.window.transient(parent)
@@ -115,13 +213,13 @@ class ModDialog:
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill=BOTH, expand=True)
 
-        ttk.Label(frame, text="Mod ID").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text=self.tr("dialog.mod.item_id")).grid(row=0, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=self.item_id_var, width=54).grid(row=0, column=1, sticky="ew", pady=4)
 
         button_row = ttk.Frame(frame)
         button_row.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
-        ttk.Button(button_row, text="Cancel", command=self._cancel).pack(side=RIGHT, padx=(8, 0))
-        ttk.Button(button_row, text="Save", command=self._save).pack(side=RIGHT)
+        ttk.Button(button_row, text=self.tr("buttons.cancel"), command=self._cancel).pack(side=RIGHT, padx=(8, 0))
+        ttk.Button(button_row, text=self.tr("buttons.save"), command=self._save).pack(side=RIGHT)
         frame.columnconfigure(1, weight=1)
         self.window.protocol("WM_DELETE_WINDOW", self._cancel)
         self.window.bind("<Return>", lambda _event: self._save())
@@ -131,7 +229,7 @@ class ModDialog:
     def _save(self) -> None:
         item_id = self.item_id_var.get().strip()
         if not item_id.isdigit():
-            messagebox.showerror(APP_NAME, "Mod ID must be numeric.", parent=self.window)
+            messagebox.showerror(APP_NAME, self.tr("message.modid_numeric"), parent=self.window)
             return
         self.result = {"workshop_item_id": item_id}
         self.window.destroy()
@@ -142,40 +240,51 @@ class ModDialog:
 
 
 class SteamCMDDialog:
+    """Dialog shown when SteamCMD is missing or not yet configured."""
+
     def __init__(self, parent, docs_url: str):
         self.parent = parent
+        self.tr = parent.i18n.translate
         self.result: str | None = None
+        self._tooltips: list[Tooltip] = []
         self.docs_url = docs_url
         self.window = Toplevel(parent)
-        self.window.title("SteamCMD required")
+        self.window.title(self.tr("dialog.steamcmd.title"))
         self.window.transient(parent)
         self.window.grab_set()
         self.window.resizable(False, False)
 
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill=BOTH, expand=True)
-        message = (
-            "SteamCMD is required for workshop downloads.\n"
-            "Choose a SteamCMD path, open the documentation, or continue without configuring it."
-        )
+        message = self.tr("dialog.steamcmd.message")
         ttk.Label(frame, text=message, justify="left").pack(anchor="w", fill=X)
-        link = ttk.Label(frame, text=self.docs_url, foreground="blue", cursor="hand2")
+        link = ttk.Label(frame, text=self.tr("dialog.steamcmd.link"), foreground="blue", cursor="hand2")
         link.pack(anchor="w", pady=(8, 10))
         link.bind("<Button-1>", lambda _event: webbrowser.open(self.docs_url))
 
         button_row = ttk.Frame(frame)
         button_row.pack(fill=X, pady=(4, 0))
-        ttk.Button(button_row, text="Select SteamCMD path", command=self._select_path).pack(side=LEFT)
-        ttk.Button(button_row, text="Open docs", command=lambda: webbrowser.open(self.docs_url)).pack(side=LEFT, padx=8)
-        ttk.Button(button_row, text="Later", command=self._later).pack(side=RIGHT)
+        select_button = ttk.Button(button_row, text=self.tr("buttons.select_steamcmd"), command=self._select_path)
+        select_button.pack(side=LEFT)
+        open_docs_button = ttk.Button(button_row, text=self.tr("buttons.open_docs"), command=lambda: webbrowser.open(self.docs_url))
+        open_docs_button.pack(side=LEFT, padx=8)
+        later_button = ttk.Button(button_row, text=self.tr("buttons.later"), command=self._later)
+        later_button.pack(side=RIGHT)
+        self._tooltips.append(Tooltip(select_button, lambda: self.tr("tooltip.select_steamcmd")))
+        self._tooltips.append(Tooltip(open_docs_button, lambda: self.tr("tooltip.open_docs")))
+        self._tooltips.append(Tooltip(later_button, lambda: self.tr("tooltip.later")))
         self.window.protocol("WM_DELETE_WINDOW", self._later)
         center_window_over_parent(parent, self.window)
 
     def _select_path(self) -> None:
         path = filedialog.askopenfilename(
             parent=self.window,
-            title="Select steamcmd.exe",
-            filetypes=[("steamcmd.exe", "steamcmd.exe"), ("Executable", "*.exe"), ("All files", "*.*")],
+            title=self.tr("dialog.steamcmd.select_path_title"),
+            filetypes=[
+                (self.tr("steamcmd.filetype"), "steamcmd.exe"),
+                (self.tr("dialog.steamcmd.filetype_exe"), "*.exe"),
+                (self.tr("dialog.steamcmd.filetype_all"), "*.*"),
+            ],
         )
         if path:
             self.result = path
@@ -187,24 +296,25 @@ class SteamCMDDialog:
 
 
 class App(Tk):
+    """Main application window and controller for the downloader."""
+
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME)
-        self.geometry("1240x780")
-        self.minsize(1100, 700)
-
         self.paths = get_app_paths()
         self.paths.base_dir.mkdir(parents=True, exist_ok=True)
         self.paths.log_dir.mkdir(parents=True, exist_ok=True)
 
-        self.games = GameStore(self.paths.games_path)
         self.db = Database(self.paths.db_path)
+        self.i18n = TranslationManager(self._initial_language())
+        self.tr = self.i18n.translate
+        self.games = GameStore(self.paths.games_path)
         self.output_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.current_game: Game | None = None
         self.current_game_id: str | None = self.db.get_setting("last_selected_game_id", "")
         self.checked_mod_ids: set[int] = set()
         self._pending_game_name_backfills: set[int] = set()
         self._pending_mod_name_backfills: set[int] = set()
+        self._tooltips: list[Tooltip] = []
 
         saved_steamcmd = self.db.get_setting("steamcmd_path", "")
         self.steamcmd_manager = SteamCMDManager(saved_steamcmd)
@@ -212,42 +322,82 @@ class App(Tk):
         if self.steamcmd_path:
             self.db.set_setting("steamcmd_path", str(self.steamcmd_path))
 
+        self.title(self.tr("app.title"))
+        self.geometry("1200x740")
+        self.minsize(1040, 660)
+
         self._build_ui()
         self._load_games()
         self.after(120, self._poll_queue)
         self.after(300, self._ensure_steamcmd)
 
+    def _initial_language(self) -> str:
+        """Determine the initial UI language from settings or system locale."""
+
+        saved_language = self.db.get_setting("ui_language", "").strip().lower()
+        if saved_language:
+            return saved_language
+        locale_info = py_locale.getlocale()[0] or py_locale.getdefaultlocale()[0] or ""
+        system_language = locale_info.split("_", 1)[0].lower() if locale_info else ""
+        return system_language if system_language in LANGUAGE_CODES else DEFAULT_LANGUAGE
+
     def _build_ui(self) -> None:
+        """Construct the main window layout."""
+
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        top = ttk.Frame(self, padding=(10, 10, 10, 4))
+        top = ttk.Frame(self, padding=(8, 8, 8, 3))
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
 
-        ttk.Label(top, text="Games").grid(row=0, column=0, sticky="w")
+        self.games_label = ttk.Label(top, text=self.tr("section.games"))
+        self.games_label.grid(row=0, column=0, sticky="w")
         game_buttons = ttk.Frame(top)
         game_buttons.grid(row=0, column=2, sticky="e")
-        ttk.Button(game_buttons, text="+", width=3, command=self._add_game).pack(side=LEFT)
-        ttk.Button(game_buttons, text="Edit", command=self._edit_game).pack(side=LEFT, padx=4)
-        ttk.Button(game_buttons, text="Delete", command=self._delete_game).pack(side=LEFT)
-        ttk.Button(game_buttons, text="SteamCMD", command=self._configure_steamcmd).pack(side=LEFT, padx=(12, 0))
+        self.add_game_button = ttk.Button(game_buttons, text=self.tr("buttons.add"), width=3, command=self._add_game)
+        self.add_game_button.pack(side=LEFT)
+        self.edit_game_button = ttk.Button(game_buttons, text=self.tr("buttons.edit"), command=self._edit_game)
+        self.edit_game_button.pack(side=LEFT, padx=3)
+        self.delete_game_button = ttk.Button(game_buttons, text=self.tr("buttons.delete"), command=self._delete_game)
+        self.delete_game_button.pack(side=LEFT)
+        self.steamcmd_button = ttk.Button(game_buttons, text=self.tr("buttons.steamcmd"), command=self._configure_steamcmd)
+        self.steamcmd_button.pack(side=LEFT, padx=(8, 0))
 
-        self.game_tree = ttk.Treeview(top, columns=("name", "appid", "mods_path"), show="headings", height=5, selectmode="browse")
-        self.game_tree.heading("name", text="Spielname")
-        self.game_tree.heading("appid", text="AppID")
-        self.game_tree.heading("mods_path", text="Mods path")
+        language_frame = ttk.Frame(top)
+        language_frame.grid(row=0, column=3, sticky="e", padx=(8, 0))
+        self.language_label = ttk.Label(language_frame, text=self.tr("language.label"))
+        self.language_label.pack(side=LEFT, padx=(0, 4))
+        self.language_var = StringVar(value=self._language_display_name(self.i18n.language))
+        self.language_combo = ttk.Combobox(
+            language_frame,
+            textvariable=self.language_var,
+            values=[self._language_display_name(code) for code in self._available_language_codes()],
+            state="readonly",
+            width=11,
+        )
+        self.language_combo.pack(side=LEFT)
+        self.language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+        self._add_tooltip(self.add_game_button, "tooltip.add_game")
+        self._add_tooltip(self.edit_game_button, "tooltip.edit_game")
+        self._add_tooltip(self.delete_game_button, "tooltip.delete_game")
+        self._add_tooltip(self.steamcmd_button, "tooltip.steamcmd")
+        self._add_tooltip(self.language_label, "tooltip.language")
+        self._add_tooltip(self.language_combo, "tooltip.language")
+
+        self.game_tree = ttk.Treeview(top, columns=("name", "appid", "mods_path"), show="headings", height=4, selectmode="browse")
         self.game_tree.column("name", width=240, anchor="w")
         self.game_tree.column("appid", width=100, anchor="w")
         self.game_tree.column("mods_path", width=600, anchor="w")
-        self.game_tree.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self.game_tree.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         self.game_tree.bind("<<TreeviewSelect>>", self._on_game_selected)
+        self._add_tooltip(self.game_tree, "tooltip.game_table")
 
         game_scroll = ttk.Scrollbar(top, orient="vertical", command=self.game_tree.yview)
         self.game_tree.configure(yscrollcommand=game_scroll.set)
-        game_scroll.grid(row=1, column=3, sticky="ns", pady=(6, 0))
+        game_scroll.grid(row=1, column=4, sticky="ns", pady=(6, 0))
 
-        middle = ttk.Frame(self, padding=(10, 6, 10, 6))
+        middle = ttk.Frame(self, padding=(8, 4, 8, 4))
         middle.grid(row=1, column=0, sticky="nsew")
         middle.columnconfigure(0, weight=1)
         middle.rowconfigure(1, weight=1)
@@ -255,17 +405,29 @@ class App(Tk):
         mod_header = ttk.Frame(middle)
         mod_header.grid(row=0, column=0, sticky="ew")
         mod_header.columnconfigure(0, weight=1)
-        self.mod_title_var = StringVar(value="Mods")
+        self.mod_title_var = StringVar(value=self.tr("mod.title.generic"))
         ttk.Label(mod_header, textvariable=self.mod_title_var).grid(row=0, column=0, sticky="w")
 
         mod_buttons = ttk.Frame(mod_header)
         mod_buttons.grid(row=0, column=1, sticky="e")
-        ttk.Button(mod_buttons, text="+", width=3, command=self._add_mod).pack(side=LEFT)
-        ttk.Button(mod_buttons, text="Edit", command=self._edit_mod).pack(side=LEFT, padx=4)
-        ttk.Button(mod_buttons, text="Delete", command=self._delete_mod).pack(side=LEFT)
-        ttk.Button(mod_buttons, text="Check for Updates", command=self._check_updates).pack(side=LEFT, padx=(12, 4))
-        ttk.Button(mod_buttons, text="Download", command=lambda: self._download_selected("download")).pack(side=LEFT, padx=4)
-        ttk.Button(mod_buttons, text="Update", command=lambda: self._download_selected("update")).pack(side=LEFT, padx=4)
+        self.add_mod_button = ttk.Button(mod_buttons, text=self.tr("buttons.add"), width=3, command=self._add_mod)
+        self.add_mod_button.pack(side=LEFT)
+        self.edit_mod_button = ttk.Button(mod_buttons, text=self.tr("buttons.edit"), command=self._edit_mod)
+        self.edit_mod_button.pack(side=LEFT, padx=3)
+        self.delete_mod_button = ttk.Button(mod_buttons, text=self.tr("buttons.delete"), command=self._delete_mod)
+        self.delete_mod_button.pack(side=LEFT)
+        self.check_updates_button = ttk.Button(mod_buttons, text=self.tr("buttons.check_updates"), command=self._check_updates)
+        self.check_updates_button.pack(side=LEFT, padx=(8, 3))
+        self.download_button = ttk.Button(mod_buttons, text=self.tr("buttons.download"), command=lambda: self._download_selected("download"))
+        self.download_button.pack(side=LEFT, padx=3)
+        self.update_button = ttk.Button(mod_buttons, text=self.tr("buttons.update"), command=lambda: self._download_selected("update"))
+        self.update_button.pack(side=LEFT, padx=3)
+        self._add_tooltip(self.add_mod_button, "tooltip.add_mod")
+        self._add_tooltip(self.edit_mod_button, "tooltip.edit_mod")
+        self._add_tooltip(self.delete_mod_button, "tooltip.delete_mod")
+        self._add_tooltip(self.check_updates_button, "tooltip.check_updates")
+        self._add_tooltip(self.download_button, "tooltip.download")
+        self._add_tooltip(self.update_button, "tooltip.update")
 
         columns = (
             "selected",
@@ -279,66 +441,180 @@ class App(Tk):
             "status",
             "error",
         )
-        self.mod_tree = ttk.Treeview(middle, columns=columns, show="headings", selectmode="browse")
-        headings = {
-            "selected": "Sel",
-            "name": "Mod name",
-            "item_id": "Item ID",
-            "version": "Version",
-            "remote_updated": "Remote updated",
-            "compatible_game_version": "Game version",
-            "new_version": "New version",
-            "last_downloaded": "Last downloaded",
-            "status": "Status",
-            "error": "Error",
+        self.mod_tree = ttk.Treeview(middle, columns=columns, show="headings", selectmode="browse", height=7)
+        self.mod_headings = {
+            "selected": "headings.selected",
+            "name": "headings.mod_name",
+            "item_id": "headings.item_id",
+            "version": "headings.version",
+            "remote_updated": "headings.remote_updated",
+            "compatible_game_version": "headings.compatible_game_version",
+            "new_version": "headings.new_version",
+            "last_downloaded": "headings.last_downloaded",
+            "status": "headings.status",
+            "error": "headings.error",
         }
         widths = {
-            "selected": 55,
-            "name": 220,
-            "item_id": 120,
-            "version": 140,
-            "remote_updated": 150,
-            "compatible_game_version": 120,
-            "new_version": 110,
-            "last_downloaded": 150,
-            "status": 110,
-            "error": 260,
+            "selected": 48,
+            "name": 210,
+            "item_id": 108,
+            "version": 122,
+            "remote_updated": 136,
+            "compatible_game_version": 108,
+            "new_version": 90,
+            "last_downloaded": 136,
+            "status": 142,
+            "error": 224,
         }
         for key in columns:
-            self.mod_tree.heading(key, text=headings[key], anchor="center")
+            self.mod_tree.heading(key, text=self.tr(self.mod_headings[key]), anchor="center")
             self.mod_tree.column(key, width=widths[key], anchor="center", stretch=True)
-        self.mod_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        self.mod_tree.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.mod_tree.bind("<Button-1>", self._on_mod_click)
         self.mod_tree.bind("<Double-1>", lambda _event: self._edit_mod())
+        self._add_tooltip(self.mod_tree, "tooltip.mod_table")
+        self.mod_tree.tag_configure("status_new", background="#f4f7fb")
+        self.mod_tree.tag_configure("status_update", background="#fff2d8")
+        self.mod_tree.tag_configure("status_downloaded", background="#e6f6ea")
+        self.mod_tree.tag_configure("status_error", background="#fde8e8")
 
         mod_scroll = ttk.Scrollbar(middle, orient="vertical", command=self.mod_tree.yview)
         self.mod_tree.configure(yscrollcommand=mod_scroll.set)
-        mod_scroll.grid(row=1, column=1, sticky="ns", pady=(8, 0))
+        mod_scroll.grid(row=1, column=1, sticky="ns", pady=(6, 0))
 
-        bottom = ttk.Frame(self, padding=(10, 4, 10, 10))
+        legend = ttk.Frame(middle)
+        legend.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(legend, text=self.tr("legend.title")).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._legend_item(legend, 0, "#f4f7fb", self.tr("legend.new"))
+        self._legend_item(legend, 1, "#fff2d8", self.tr("legend.update_available"))
+        self._legend_item(legend, 2, "#e6f6ea", self.tr("legend.downloaded"))
+        self._legend_item(legend, 3, "#fde8e8", self.tr("legend.error"))
+
+        bottom = ttk.Frame(self, padding=(8, 3, 8, 8))
         bottom.grid(row=2, column=0, sticky="nsew")
         bottom.columnconfigure(0, weight=1)
         bottom.rowconfigure(0, weight=1)
 
-        ttk.Label(bottom, text="Log").grid(row=0, column=0, sticky="w")
+        self.log_label = ttk.Label(bottom, text=self.tr("section.log"))
+        self.log_label.grid(row=0, column=0, sticky="w")
         text_frame = ttk.Frame(bottom)
         text_frame.grid(row=1, column=0, sticky="nsew")
         text_frame.columnconfigure(0, weight=1)
         text_frame.rowconfigure(0, weight=1)
         from tkinter import Text
 
-        self.log_widget = Text(text_frame, height=10, wrap="word")
+        self.log_widget = Text(text_frame, height=8, wrap="word")
         self.log_widget.grid(row=0, column=0, sticky="nsew")
         log_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.log_widget.yview)
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log_widget.configure(yscrollcommand=log_scroll.set)
         self.log_widget.configure(state="disabled")
 
-        self.status_var = StringVar(value="Ready")
+        self.status_var = StringVar(value=self.tr("status.ready"))
         status = ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w")
         status.grid(row=3, column=0, sticky="ew")
+        self._add_tooltip(status, "tooltip.status_bar")
+
+        self._apply_translations()
+
+    def _add_tooltip(self, widget, key: str) -> None:
+        """Attach a localized tooltip to a widget."""
+
+        self._tooltips.append(Tooltip(widget, lambda key=key: self.tr(key)))
+
+    def _legend_item(self, parent, column: int, color: str, text: str) -> None:
+        """Add one colored legend entry."""
+
+        swatch = Label(parent, width=2, height=1, bg=color, relief="solid", borderwidth=1)
+        swatch.grid(row=0, column=column * 2 + 1, sticky="w", padx=(0, 6))
+        ttk.Label(parent, text=text).grid(row=0, column=column * 2 + 2, sticky="w", padx=(0, 14))
+
+    def _mod_status_data(self, mod: Mod) -> tuple[str, str]:
+        """Return the localized status text and Treeview tag for a mod."""
+
+        if mod.download_status == "error":
+            return self.tr("mod.status.error"), "status_error"
+        if mod.download_status == "downloaded":
+            return self.tr("mod.status.downloaded"), "status_downloaded"
+        if mod.new_version_available:
+            return self.tr("mod.status.update_available"), "status_update"
+        return self.tr("mod.status.new"), "status_new"
+
+    def _available_language_codes(self) -> list[str]:
+        """Return the languages supported by the current locale files."""
+
+        supported = self.i18n.available_languages()
+        ordered = [code for code in LANGUAGE_CODES if code in supported]
+        return ordered or supported
+
+    def _language_display_name(self, language: str) -> str:
+        """Return the display name shown in the language dropdown."""
+
+        return self.tr(f"languages.{language}")
+
+    def _language_code_from_selection(self, selection: str) -> str:
+        """Map a dropdown label back to a locale code."""
+
+        for code in self._available_language_codes():
+            if selection == self._language_display_name(code):
+                return code
+        return DEFAULT_LANGUAGE
+
+    def _apply_translations(self) -> None:
+        """Refresh visible text after a language change."""
+
+        self.title(self.tr("app.title"))
+        self.games_label.configure(text=self.tr("section.games"))
+        self.add_game_button.configure(text=self.tr("buttons.add"))
+        self.edit_game_button.configure(text=self.tr("buttons.edit"))
+        self.delete_game_button.configure(text=self.tr("buttons.delete"))
+        self.steamcmd_button.configure(text=self.tr("buttons.steamcmd"))
+        self.language_label.configure(text=self.tr("language.label"))
+        self.language_combo.configure(values=[self._language_display_name(code) for code in self._available_language_codes()])
+        self.language_var.set(self._language_display_name(self.i18n.language))
+        self.add_mod_button.configure(text=self.tr("buttons.add"))
+        self.edit_mod_button.configure(text=self.tr("buttons.edit"))
+        self.delete_mod_button.configure(text=self.tr("buttons.delete"))
+        self.check_updates_button.configure(text=self.tr("buttons.check_updates"))
+        self.download_button.configure(text=self.tr("buttons.download"))
+        self.update_button.configure(text=self.tr("buttons.update"))
+        self.log_label.configure(text=self.tr("section.log"))
+        self.status_var.set(self.tr("status.ready"))
+        self._refresh_tree_headings()
+        self._refresh_mod_title()
+
+    def _refresh_tree_headings(self) -> None:
+        """Apply localized headings to the game and mod tables."""
+
+        self.game_tree.heading("name", text=self.tr("headings.game_name"))
+        self.game_tree.heading("appid", text=self.tr("headings.appid"))
+        self.game_tree.heading("mods_path", text=self.tr("headings.mods_path"))
+        for column, key in self.mod_headings.items():
+            self.mod_tree.heading(column, text=self.tr(key), anchor="center")
+
+    def _refresh_mod_title(self) -> None:
+        """Refresh the mods section title for the active game."""
+
+        if self.current_game:
+            title = self.current_game.game_name or self.tr("game.fallback.app", app_id=self.current_game.steam_app_id)
+            self.mod_title_var.set(self.tr("mod.title.single", game_name=title, app_id=self.current_game.steam_app_id))
+        else:
+            self.mod_title_var.set(self.tr("mod.title.generic"))
+
+    def _on_language_selected(self, _event=None) -> None:
+        """Persist and apply the selected UI language."""
+
+        selected_code = self._language_code_from_selection(self.language_var.get())
+        self.i18n.set_language(selected_code)
+        self.tr = self.i18n.translate
+        self.db.set_setting("ui_language", selected_code)
+        self._apply_translations()
+        self._load_games()
+        self._refresh_mods()
 
     def _append_log(self, line: str) -> None:
+        """Append a line to the on-screen log and the log file."""
+
         self.log_widget.configure(state="normal")
         self.log_widget.insert("end", f"{line}\n")
         self.log_widget.see("end")
@@ -347,11 +623,13 @@ class App(Tk):
             handle.write(line + "\n")
 
     def _load_games(self) -> None:
+        """Reload the game list and restore the current selection if possible."""
+
         loaded_games = self.games.load_games()
         for item in self.game_tree.get_children():
             self.game_tree.delete(item)
         for game in loaded_games:
-            display_name = game.game_name or f"App {game.steam_app_id}"
+            display_name = game.game_name or self.tr("game.fallback.app", app_id=game.steam_app_id)
             self.game_tree.insert(
                 "",
                 "end",
@@ -378,14 +656,12 @@ class App(Tk):
         return self.games.get_game(selection[0])
 
     def _set_game(self, game: Game | None) -> None:
+        """Set the active game and refresh the mod view."""
+
         self.current_game = game
         self.current_game_id = game.id if game else None
         self.db.set_setting("last_selected_game_id", self.current_game_id or "")
-        if game:
-            title = game.game_name or f"App {game.steam_app_id}"
-            self.mod_title_var.set(f"Mods for {title} (AppID {game.steam_app_id})")
-        else:
-            self.mod_title_var.set("Mods")
+        self._refresh_mod_title()
         self._refresh_mods()
 
     def _select_game_by_id(self, game_id: str) -> None:
@@ -397,35 +673,51 @@ class App(Tk):
         self._set_game(game)
 
     def _refresh_mods(self) -> None:
+        """Reload the mod list for the current game."""
+
         for item in self.mod_tree.get_children():
             self.mod_tree.delete(item)
         self.checked_mod_ids = set()
         if not self.current_game:
+            self.status_var.set(self.tr("status.ready"))
             return
         mods = self.db.list_mods(self.current_game.id)
         for mod in mods:
             self._insert_mod_row(mod)
         self._schedule_mod_name_backfill(mods)
-        self.status_var.set(f"{len(mods)} mods loaded")
+        self.status_var.set(self.tr("status.mod_count", count=len(mods)))
 
     def _insert_mod_row(self, mod: Mod) -> None:
-        selected = "[x]" if mod.id in self.checked_mod_ids else "[ ]"
+        selected = self.tr("mod.selected.yes") if mod.id in self.checked_mod_ids else self.tr("mod.selected.no")
+        status_text, tag = self._mod_status_data(mod)
         self.mod_tree.insert(
             "",
             "end",
             iid=str(mod.id),
-            values=(
-                selected,
-                mod.mod_name,
-                mod.workshop_item_id,
-                mod.mod_version,
-                mod.remote_updated_at,
-                mod.compatible_game_version,
-                "yes" if mod.new_version_available else "no",
-                mod.last_downloaded_at,
-                mod.download_status,
-                mod.last_error,
-            ),
+            values=self._mod_row_values(mod, selected, status_text),
+            tags=(tag,),
+        )
+
+    def _mod_row_values(
+        self,
+        mod: Mod,
+        selected: str | None = None,
+        status_text: str | None = None,
+    ) -> tuple[str, str, str, str, str, str, str, str, str, str]:
+        """Build the localized values tuple for a mod table row."""
+
+        localized_status = status_text or self._mod_status_data(mod)[0]
+        return (
+            selected or (self.tr("mod.selected.yes") if mod.id in self.checked_mod_ids else self.tr("mod.selected.no")),
+            mod.mod_name,
+            mod.workshop_item_id,
+            mod.mod_version,
+            mod.remote_updated_at,
+            mod.compatible_game_version,
+            self.tr("mod.boolean.yes") if mod.new_version_available else self.tr("mod.boolean.no"),
+            mod.last_downloaded_at,
+            localized_status,
+            mod.last_error,
         )
 
     def _selected_mods(self) -> list[Mod]:
@@ -444,6 +736,8 @@ class App(Tk):
         return fallback or utc_now()
 
     def _schedule_game_name_backfill(self, games: list[Game]) -> None:
+        """Start background lookups for games that still lack a public name."""
+
         for game in games:
             if game.game_name.strip():
                 continue
@@ -454,6 +748,8 @@ class App(Tk):
             thread.start()
 
     def _schedule_mod_name_backfill(self, mods: list[Mod]) -> None:
+        """Start background lookups for mods that still lack a title."""
+
         for mod in mods:
             if mod.mod_name.strip():
                 continue
@@ -464,6 +760,8 @@ class App(Tk):
             thread.start()
 
     def _backfill_game_name_worker(self, game: Game) -> None:
+        """Resolve and persist a missing game name in the background."""
+
         try:
             game_name = fetch_public_app_name(game.steam_app_id)
             if not game_name:
@@ -475,12 +773,14 @@ class App(Tk):
                 updated_at=utc_now(),
             )
             self.games.upsert_game(updated)
-            self.output_queue.put(("log", f"Game name resolved: {game_name}"))
+            self.output_queue.put(("log", self.tr("log.game_name_resolved", game_name=game_name)))
             self.output_queue.put(("refresh_games", game.id))
         finally:
             self._pending_game_name_backfills.discard(game.steam_app_id)
 
     def _backfill_mod_name_worker(self, mod: Mod) -> None:
+        """Resolve and persist a missing mod title in the background."""
+
         try:
             metadata = fetch_workshop_metadata(mod.workshop_item_id)
             if not metadata or not metadata.title.strip():
@@ -493,13 +793,15 @@ class App(Tk):
                 compatible_game_version=metadata.compatible_game_version,
                 new_version_available=mod.new_version_available,
             )
-            self.output_queue.put(("log", f"Mod name resolved: {metadata.title}"))
+            self.output_queue.put(("log", self.tr("log.mod_name_resolved", mod_name=metadata.title)))
             self.output_queue.put(("refresh", mod.game_id))
         finally:
             if mod.id is not None:
                 self._pending_mod_name_backfills.discard(mod.id)
 
     def _on_mod_click(self, event) -> str | None:
+        """Toggle the checkbox column for a clicked mod row."""
+
         row_id = self.mod_tree.identify_row(event.y)
         column = self.mod_tree.identify_column(event.x)
         if not row_id:
@@ -512,23 +814,15 @@ class App(Tk):
                 self.checked_mod_ids.add(mod_id)
             mod = self.db.get_mod(mod_id)
             if mod:
-                self.mod_tree.item(row_id, values=(
-                    "[x]" if mod_id in self.checked_mod_ids else "[ ]",
-                    mod.mod_name,
-                    mod.workshop_item_id,
-                    mod.mod_version,
-                    mod.remote_updated_at,
-                    mod.compatible_game_version,
-                    "yes" if mod.new_version_available else "no",
-                    mod.last_downloaded_at,
-                    mod.download_status,
-                    mod.last_error,
-                ))
+                status_text, tag = self._mod_status_data(mod)
+                self.mod_tree.item(row_id, values=self._mod_row_values(mod, status_text=status_text), tags=(tag,))
             return "break"
         return None
 
     def _add_game(self) -> None:
-        dialog = GameDialog(self, "Add game")
+        """Open the add-game flow and create a new entry."""
+
+        dialog = GameDialog(self, self.tr("dialog.game.add.title"))
         self.wait_window(dialog.window)
         if not dialog.result:
             return
@@ -536,25 +830,27 @@ class App(Tk):
         mods_path = dialog.result["mods_path"]
         game_id = game_id_from_appid(app_id)
         if self.games.get_game(game_id):
-            messagebox.showerror(APP_NAME, "A game with that AppID already exists.", parent=self)
+            messagebox.showerror(APP_NAME, self.tr("message.game_exists"), parent=self)
             return
-        self.status_var.set("Resolving game metadata...")
+        self.status_var.set(self.tr("message.resolve_game_metadata"))
         thread = threading.Thread(target=self._create_game_worker, args=(app_id, mods_path), daemon=True)
         thread.start()
 
     def _edit_game(self) -> None:
+        """Edit the currently selected game."""
+
         game = self._current_game_from_selection()
         if not game:
-            messagebox.showinfo(APP_NAME, "Select a game first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_game"), parent=self)
             return
-        dialog = GameDialog(self, "Edit game", game)
+        dialog = GameDialog(self, self.tr("dialog.game.edit.title"), game)
         self.wait_window(dialog.window)
         if not dialog.result:
             return
         app_id = int(dialog.result["steam_app_id"])
         mods_path = dialog.result["mods_path"]
         if app_id != game.steam_app_id:
-            messagebox.showerror(APP_NAME, "Changing the AppID is not supported for existing games. Delete and recreate the entry.", parent=self)
+            messagebox.showerror(APP_NAME, self.tr("message.change_appid_not_supported"), parent=self)
             return
         updated = replace(
             game,
@@ -564,12 +860,14 @@ class App(Tk):
         )
         self.games.upsert_game(updated)
         self.db.set_setting("last_selected_game_id", game.id)
-        self._append_log(f"Game updated: {game.id}")
+        self._append_log(self.tr("log.game_updated", game_id=game.id))
         self._load_games()
 
     def _create_game_worker(self, app_id: int, mods_path: str) -> None:
+        """Background worker that resolves game metadata and persists it."""
+
         game_id = game_id_from_appid(app_id)
-        game_name = fetch_public_app_name(app_id) or f"App {app_id}"
+        game_name = fetch_public_app_name(app_id) or self.tr("game.fallback.app", app_id=app_id)
         game = Game(
             id=game_id,
             steam_app_id=app_id,
@@ -580,37 +878,43 @@ class App(Tk):
             updated_at=utc_now(),
         )
         self.games.upsert_game(game)
-        self.output_queue.put(("log", f"Game added: {game_name} (AppID {app_id})"))
+        self.output_queue.put(("log", self.tr("log.game_added", game_name=game_name, app_id=app_id)))
         self.output_queue.put(("refresh_games", game.id))
-        self.output_queue.put(("status", f"Game added: {game_name}"))
+        self.output_queue.put(("status", self.tr("status.game_added", game_name=game_name)))
 
     def _make_temp_install_dir(self, game: Game, mod: Mod) -> Path:
+        """Return a unique temporary install directory for a download."""
+
         return self.paths.base_dir / "tmp_downloads" / game.id / mod.workshop_item_id / uuid.uuid4().hex
 
     def _delete_game(self) -> None:
+        """Delete the currently selected game and its mods."""
+
         game = self._current_game_from_selection()
         if not game:
-            messagebox.showinfo(APP_NAME, "Select a game first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_game"), parent=self)
             return
-        if not messagebox.askyesno(APP_NAME, f"Delete game {game.id}? This removes its mods as well.", parent=self):
+        if not messagebox.askyesno(APP_NAME, self.tr("message.delete_game", game_id=game.id), parent=self):
             return
         self.games.delete_game(game.id)
         self.db.delete_mods_for_game(game.id)
-        self._append_log(f"Game deleted: {game.id}")
+        self._append_log(self.tr("log.game_deleted", game_id=game.id))
         self._load_games()
 
     def _add_mod(self) -> None:
+        """Open the add-mod flow and create a new mod entry."""
+
         if not self.current_game:
-            messagebox.showinfo(APP_NAME, "Select a game first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_game"), parent=self)
             return
-        dialog = ModDialog(self, "Add mod")
+        dialog = ModDialog(self, self.tr("dialog.mod.add.title"))
         self.wait_window(dialog.window)
         if not dialog.result:
             return
         workshop_item_id = dialog.result["workshop_item_id"]
         url = derive_workshop_item_url(workshop_item_id)
         metadata = fetch_workshop_metadata(workshop_item_id)
-        mod_name = metadata.title if metadata else f"Workshop {workshop_item_id}"
+        mod_name = metadata.title if metadata else self.tr("mod.fallback.workshop", workshop_item_id=workshop_item_id)
         remote_updated_at = self._effective_version_stamp(metadata)
         compatible_game_version = metadata.compatible_game_version if metadata else ""
         mod = create_mod(
@@ -626,7 +930,7 @@ class App(Tk):
             download_status="new",
         )
         mod_id = self.db.upsert_mod(mod)
-        self._append_log(f"Mod added: {mod_name} ({workshop_item_id})")
+        self._append_log(self.tr("log.mod_added", mod_name=mod_name, workshop_item_id=workshop_item_id))
         if metadata:
             self.db.update_mod_metadata(
                 mod_id,
@@ -639,11 +943,13 @@ class App(Tk):
         self._refresh_mods()
 
     def _edit_mod(self) -> None:
+        """Edit the currently selected mod."""
+
         mod = self._current_mod_from_selection()
         if not mod:
-            messagebox.showinfo(APP_NAME, "Select a mod first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_mod"), parent=self)
             return
-        dialog = ModDialog(self, "Edit mod", mod)
+        dialog = ModDialog(self, self.tr("dialog.mod.edit.title"), mod)
         self.wait_window(dialog.window)
         if not dialog.result:
             return
@@ -666,24 +972,28 @@ class App(Tk):
         try:
             self.db.update_mod_by_id(updated_mod)
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Could not update mod: {exc}", parent=self)
+            messagebox.showerror(APP_NAME, self.tr("message.could_not_update_mod", error=exc), parent=self)
             return
-        self._append_log(f"Mod updated: {mod_name}")
+        self._append_log(self.tr("log.mod_updated", mod_name=mod_name))
         self._refresh_mods()
 
     def _delete_mod(self) -> None:
+        """Delete the currently selected mod."""
+
         mod = self._current_mod_from_selection()
         if not mod:
-            messagebox.showinfo(APP_NAME, "Select a mod first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_mod"), parent=self)
             return
-        if not messagebox.askyesno(APP_NAME, f"Delete mod {mod.mod_name}?", parent=self):
+        if not messagebox.askyesno(APP_NAME, self.tr("message.delete_mod", mod_name=mod.mod_name), parent=self):
             return
         self.db.delete_mod(mod.id)
         self.checked_mod_ids.discard(mod.id)
-        self._append_log(f"Mod deleted: {mod.mod_name}")
+        self._append_log(self.tr("log.mod_deleted", mod_name=mod.mod_name))
         self._refresh_mods()
 
     def _current_mod_from_selection(self) -> Mod | None:
+        """Return the currently selected mod if it belongs to the active game."""
+
         selection = self.mod_tree.selection()
         if not selection:
             return None
@@ -693,21 +1003,25 @@ class App(Tk):
         return None
 
     def _check_updates(self) -> None:
+        """Start a background update check for all mods of the current game."""
+
         if not self.current_game:
-            messagebox.showinfo(APP_NAME, "Select a game first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_game"), parent=self)
             return
         mods = self.db.list_mods(self.current_game.id)
         if not mods:
             return
-        self.status_var.set("Checking updates...")
+        self.status_var.set(self.tr("status.updating"))
         thread = threading.Thread(target=self._check_updates_worker, args=(self.current_game, mods), daemon=True)
         thread.start()
 
     def _check_updates_worker(self, game: Game, mods: list[Mod]) -> None:
+        """Compare stored versions against remote workshop metadata."""
+
         for mod in mods:
             metadata = fetch_workshop_metadata(mod.workshop_item_id)
             if not metadata:
-                self.output_queue.put(("log", f"Update check failed for {mod.mod_name}"))
+                self.output_queue.put(("log", self.tr("log.update_check_failed", mod_name=mod.mod_name)))
                 continue
             remote_updated_at = self._effective_version_stamp(metadata, mod.remote_updated_at)
             local_version = mod.mod_version or mod.last_downloaded_at or mod.created_at
@@ -720,31 +1034,44 @@ class App(Tk):
                 compatible_game_version=metadata.compatible_game_version,
                 new_version_available=new_version_available,
             )
-            self.output_queue.put(("log", f"Checked {metadata.title}: new version {'yes' if new_version_available else 'no'}"))
+            self.output_queue.put(
+                (
+                    "log",
+                    self.tr(
+                        "log.checked_mod",
+                        mod_name=metadata.title,
+                        answer=self.tr("mod.boolean.yes") if new_version_available else self.tr("mod.boolean.no"),
+                    ),
+                )
+            )
         self.output_queue.put(("refresh", game.id))
-        self.output_queue.put(("status", "Update check complete"))
+        self.output_queue.put(("status", self.tr("status.update_complete")))
 
     def _download_selected(self, mode: str) -> None:
+        """Start a download or update run for the checked mods."""
+
         if not self.current_game:
-            messagebox.showinfo(APP_NAME, "Select a game first.", parent=self)
+            messagebox.showinfo(APP_NAME, self.tr("message.select_game"), parent=self)
             return
         if not self.steamcmd_path:
-            messagebox.showerror(APP_NAME, "SteamCMD is not configured.", parent=self)
+            messagebox.showerror(APP_NAME, self.tr("message.steamcmd_not_configured"), parent=self)
             return
         mods = self._selected_mods()
         if mode == "update":
             mods = [mod for mod in mods if mod.new_version_available]
         if not mods:
             if mode == "update":
-                messagebox.showinfo(APP_NAME, "Select at least one checked mod with a new version available.", parent=self)
+                messagebox.showinfo(APP_NAME, self.tr("message.select_checked_mod_for_update"), parent=self)
             else:
-                messagebox.showinfo(APP_NAME, "Select at least one mod by clicking its checkbox.", parent=self)
+                messagebox.showinfo(APP_NAME, self.tr("message.select_checked_mod_for_download"), parent=self)
             return
         thread = threading.Thread(target=self._download_worker, args=(self.current_game, mods, mode), daemon=True)
-        self.status_var.set(f"{mode.title()} started...")
+        self.status_var.set(self.tr("status.download_started", mode=self.tr(f"buttons.{mode}")))
         thread.start()
 
     def _download_worker(self, game: Game, mods: list[Mod], mode: str) -> None:
+        """Run SteamCMD downloads in the background and persist outcomes."""
+
         assert self.steamcmd_path is not None
         steamcmd = SteamCMDManager(str(self.steamcmd_path))
         for mod in mods:
@@ -762,7 +1089,7 @@ class App(Tk):
                     compatible_game_version=compatible_game_version,
                     new_version_available=bool(mod.mod_version and remote_updated_at and remote_updated_at > mod.mod_version),
                 )
-            self.output_queue.put(("log", f"{mode.title()} {mod_name}"))
+            self.output_queue.put(("log", self.tr("log.running_mode", mode=self.tr(f"buttons.{mode}"), mod_name=mod_name)))
             started_at = utc_now()
             try:
                 result = steamcmd.run_download(
@@ -792,7 +1119,7 @@ class App(Tk):
                         new_version_available=False,
                         last_error="",
                     )
-                    self.output_queue.put(("log", f"Completed: {mod_name} -> {target_path}"))
+                    self.output_queue.put(("log", self.tr("log.completed_mod", mod_name=mod_name, path=target_path)))
                 else:
                     self.db.update_mod_download_result(
                         mod.id,
@@ -803,7 +1130,7 @@ class App(Tk):
                         new_version_available=mod.new_version_available,
                         last_error=f"SteamCMD exit code {result.exit_code}",
                     )
-                    self.output_queue.put(("log", f"Failed: {mod_name} (exit {result.exit_code})"))
+                    self.output_queue.put(("log", self.tr("log.failed_mod", mod_name=mod_name, exit_code=result.exit_code)))
                 self.db.insert_download_record(
                     game_id=game.id,
                     mod_id=mod.id,
@@ -835,13 +1162,15 @@ class App(Tk):
                     success=False,
                     output=str(exc),
                 )
-                self.output_queue.put(("log", f"Error: {mod_name} -> {exc}"))
+                self.output_queue.put(("log", self.tr("log.error_mod", mod_name=mod_name, error=exc)))
             finally:
                 steamcmd.cleanup_temp_install_dir(temp_install_dir)
         self.output_queue.put(("refresh", game.id))
-        self.output_queue.put(("status", f"{mode.title()} complete"))
+        self.output_queue.put(("status", self.tr("status.download_complete", mode=self.tr(f"buttons.{mode}"))))
 
     def _poll_queue(self) -> None:
+        """Process messages from background workers on the Tk event loop."""
+
         try:
             while True:
                 kind, payload = self.output_queue.get_nowait()
@@ -858,8 +1187,10 @@ class App(Tk):
         self.after(120, self._poll_queue)
 
     def _ensure_steamcmd(self) -> None:
+        """Make sure SteamCMD is configured before the user starts downloading."""
+
         if self.steamcmd_path:
-            self.status_var.set(f"SteamCMD: {self.steamcmd_path}")
+            self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
             return
         dialog = SteamCMDDialog(self, "https://developer.valvesoftware.com/wiki/SteamCMD")
         self.wait_window(dialog.window)
@@ -868,24 +1199,32 @@ class App(Tk):
         if dialog.result:
             self.steamcmd_path = Path(dialog.result)
             self.db.set_setting("steamcmd_path", str(self.steamcmd_path))
-            self.status_var.set(f"SteamCMD: {self.steamcmd_path}")
-            self._append_log(f"SteamCMD configured: {self.steamcmd_path}")
+            self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
+            self._append_log(self.tr("log.steamcmd_configured", path=self.steamcmd_path))
         else:
-            self.status_var.set("SteamCMD not configured")
+            self.status_var.set(self.tr("status.steamcmd_not_configured"))
 
     def _configure_steamcmd(self) -> None:
+        """Open a file picker so the user can configure SteamCMD manually."""
+
         path = filedialog.askopenfilename(
             parent=self,
-            title="Select steamcmd.exe",
-            filetypes=[("steamcmd.exe", "steamcmd.exe"), ("Executable", "*.exe"), ("All files", "*.*")],
+            title=self.tr("dialog.steamcmd.select_path_title"),
+            filetypes=[
+                (self.tr("steamcmd.filetype"), "steamcmd.exe"),
+                (self.tr("dialog.steamcmd.filetype_exe"), "*.exe"),
+                (self.tr("dialog.steamcmd.filetype_all"), "*.*"),
+            ],
         )
         if path:
             self.steamcmd_path = Path(path)
             self.db.set_setting("steamcmd_path", path)
-            self.status_var.set(f"SteamCMD: {self.steamcmd_path}")
-            self._append_log(f"SteamCMD configured: {self.steamcmd_path}")
+            self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
+            self._append_log(self.tr("log.steamcmd_configured", path=self.steamcmd_path))
 
 
 def run_app() -> None:
+    """Launch the main Tkinter application."""
+
     app = App()
     app.mainloop()

@@ -1,3 +1,5 @@
+"""Local persistence for games, mods, settings, and download history."""
+
 from __future__ import annotations
 
 import json
@@ -11,21 +13,29 @@ from .models import Game, Mod
 
 
 def utc_now() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class GameStore:
+    """JSON-backed storage for the list of configured games."""
+
     def __init__(self, games_path: Path):
         self.games_path = games_path
 
     def ensure_file(self) -> None:
+        """Create the games file with an empty payload if needed."""
+
         self.games_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.games_path.exists():
             self.games_path.write_text(json.dumps({"games": []}, indent=2), encoding="utf-8")
 
     def load_games(self) -> list[Game]:
+        """Load all games from disk, returning an empty list on malformed input."""
+
         self.ensure_file()
         try:
             data = json.loads(self.games_path.read_text(encoding="utf-8"))
@@ -47,6 +57,8 @@ class GameStore:
         return sorted(games, key=lambda g: g.id.lower())
 
     def save_games(self, games: list[Game]) -> None:
+        """Write the complete game list back to disk."""
+
         self.ensure_file()
         payload = {
             "games": [
@@ -65,6 +77,8 @@ class GameStore:
         self.games_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def upsert_game(self, game: Game) -> None:
+        """Insert a new game or replace an existing one with the same ID."""
+
         games = self.load_games()
         replaced = False
         for index, existing in enumerate(games):
@@ -77,10 +91,14 @@ class GameStore:
         self.save_games(games)
 
     def delete_game(self, game_id: str) -> None:
+        """Remove a game from the JSON store."""
+
         games = [game for game in self.load_games() if game.id != game_id]
         self.save_games(games)
 
     def get_game(self, game_id: str) -> Optional[Game]:
+        """Return a single game by ID if it exists."""
+
         for game in self.load_games():
             if game.id == game_id:
                 return game
@@ -88,6 +106,8 @@ class GameStore:
 
 
 class Database:
+    """SQLite-backed application database."""
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +115,8 @@ class Database:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a database connection and commit automatically on success."""
+
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -104,6 +126,8 @@ class Database:
             conn.close()
 
     def _initialize(self) -> None:
+        """Create required tables and default pragmas."""
+
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = MEMORY")
             conn.execute("PRAGMA synchronous = NORMAL")
@@ -154,6 +178,8 @@ class Database:
             )
 
     def get_setting(self, key: str, default: str = "") -> str:
+        """Read a string setting by key."""
+
         with self.connect() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
             if row is None:
@@ -161,6 +187,8 @@ class Database:
             return str(row["value"])
 
     def set_setting(self, key: str, value: str) -> None:
+        """Store a string setting by key."""
+
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -168,6 +196,8 @@ class Database:
             )
 
     def list_mods(self, game_id: str) -> list[Mod]:
+        """Return all mods for a game, newest first."""
+
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -180,11 +210,15 @@ class Database:
         return [self._row_to_mod(row) for row in rows]
 
     def get_mod(self, mod_id: int) -> Optional[Mod]:
+        """Return a mod by its numeric database ID."""
+
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM mods WHERE id = ?", (mod_id,)).fetchone()
         return self._row_to_mod(row) if row else None
 
     def get_mod_by_key(self, game_id: str, workshop_item_id: str) -> Optional[Mod]:
+        """Return a mod by its natural key of game ID plus workshop item ID."""
+
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM mods WHERE game_id = ? AND workshop_item_id = ?",
@@ -193,6 +227,8 @@ class Database:
         return self._row_to_mod(row) if row else None
 
     def upsert_mod(self, mod: Mod) -> int:
+        """Insert or update a mod identified by game ID and workshop item ID."""
+
         now = utc_now()
         with self.connect() as conn:
             existing = conn.execute(
@@ -267,6 +303,8 @@ class Database:
         new_version_available: bool,
         last_error: str = "",
     ) -> None:
+        """Store the result of a download attempt for a mod."""
+
         with self.connect() as conn:
             conn.execute(
                 """
@@ -303,6 +341,8 @@ class Database:
         new_version_available: Optional[bool] = None,
         last_error: str = "",
     ) -> None:
+        """Update metadata fields after a Steam Workshop refresh."""
+
         fields = [
             "mod_name = ?",
             "mod_version = ?",
@@ -327,6 +367,8 @@ class Database:
             conn.execute(f"UPDATE mods SET {', '.join(fields)} WHERE id = ?", params)
 
     def update_mod_by_id(self, mod: Mod) -> None:
+        """Persist all fields of a mod row identified by its numeric ID."""
+
         if mod.id is None:
             raise ValueError("mod.id is required")
         with self.connect() as conn:
@@ -367,10 +409,14 @@ class Database:
             )
 
     def delete_mod(self, mod_id: int) -> None:
+        """Delete a single mod entry."""
+
         with self.connect() as conn:
             conn.execute("DELETE FROM mods WHERE id = ?", (mod_id,))
 
     def delete_mods_for_game(self, game_id: str) -> None:
+        """Delete every mod associated with a game."""
+
         with self.connect() as conn:
             conn.execute("DELETE FROM mods WHERE game_id = ?", (game_id,))
 
@@ -386,6 +432,8 @@ class Database:
         success: bool,
         output: str,
     ) -> None:
+        """Append a download history row."""
+
         with self.connect() as conn:
             conn.execute(
                 """
@@ -396,6 +444,8 @@ class Database:
             )
 
     def _row_to_mod(self, row: sqlite3.Row | None) -> Mod:
+        """Convert a SQLite row into a :class:`Mod` instance."""
+
         if row is None:
             raise ValueError("row is required")
         return Mod(
@@ -431,6 +481,8 @@ def create_mod(
     last_error: str = "",
     created_at: str = "",
 ) -> Mod:
+    """Create a new unsaved mod object with sensible defaults."""
+
     return Mod(
         id=None,
         game_id=game_id,
@@ -450,8 +502,12 @@ def create_mod(
 
 
 def game_id_from_appid(steam_app_id: int) -> str:
+    """Derive the stable game ID used in storage from a Steam AppID."""
+
     return f"app-{steam_app_id}"
 
 
 def random_game_id(steam_app_id: int) -> str:
+    """Generate a temporary game ID when a random identifier is needed."""
+
     return f"game-{steam_app_id}-{uuid.uuid4().hex[:6]}"

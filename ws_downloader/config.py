@@ -1,3 +1,5 @@
+"""Application-wide configuration and path helpers."""
+
 from __future__ import annotations
 
 import os
@@ -17,6 +19,8 @@ DEFAULT_DATA_DIR = Path(
 
 @dataclass(frozen=True)
 class AppPaths:
+    """Resolved filesystem locations used by the application."""
+
     base_dir: Path
     db_path: Path
     games_path: Path
@@ -25,6 +29,8 @@ class AppPaths:
 
 
 def get_app_paths() -> AppPaths:
+    """Return the current runtime paths for data, logs, and persistence."""
+
     base_dir = DEFAULT_DATA_DIR
     log_dir = base_dir / "logs"
     return AppPaths(
