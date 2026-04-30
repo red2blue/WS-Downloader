@@ -1,0 +1,2 @@
+"""WS Downloader application package."""
+

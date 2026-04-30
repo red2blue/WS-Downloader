@@ -1,0 +1,12 @@
+__pycache__/
+.pycache/
+build/
+dist/
+*.spec
+*.pyc
+*.pyo
+*.db-journal
+*.sqlite3-journal
+app_data/
+.scratch_*/
+.scratch_*
