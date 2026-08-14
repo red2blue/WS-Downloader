@@ -21,6 +21,7 @@ class DownloadResult:
 
     exit_code: int
     output: str
+    reported_error: str = ""
 
 
 class SteamCMDManager:
@@ -76,10 +77,10 @@ class SteamCMDManager:
 
         return [
             str(steamcmd_path),
-            "+login",
-            "anonymous",
             "+force_install_dir",
             str(install_dir),
+            "+login",
+            "anonymous",
             "+workshop_download_item",
             str(app_id),
             str(workshop_item_id),
@@ -113,7 +114,26 @@ class SteamCMDManager:
             output_parts.append(line)
             on_output(line.rstrip())
         exit_code = process.wait()
-        return DownloadResult(exit_code=exit_code, output="".join(output_parts))
+        output = "".join(output_parts)
+        return DownloadResult(
+            exit_code=exit_code,
+            output=output,
+            reported_error=self.extract_workshop_download_error(output),
+        )
+
+    @staticmethod
+    def extract_workshop_download_error(output: str) -> str:
+        """Return SteamCMD's workshop failure even when its exit code is zero."""
+
+        for line in output.splitlines():
+            if "ERROR!" not in line or "Download item" not in line or "failed" not in line:
+                continue
+            error = line[line.index("ERROR!") :]
+            suffix_index = error.find("Unloading Steam API")
+            if suffix_index >= 0:
+                error = error[:suffix_index]
+            return error.strip()
+        return ""
 
     def run_self_update(self, steamcmd_path: Path, on_output: Callable[[str], None]) -> DownloadResult:
         """Start SteamCMD once so it can apply its built-in updater."""

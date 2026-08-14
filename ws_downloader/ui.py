@@ -1321,9 +1321,25 @@ class App(Tk):
                     temp_install_dir,
                     lambda line: self.output_queue.put(("log", line)),
                 )
-                success = result.exit_code == 0
                 finished_at = utc_now()
                 output = result.output
+                source_path = steamcmd.downloaded_workshop_path(
+                    temp_install_dir,
+                    game.steam_app_id,
+                    mod.workshop_item_id,
+                )
+                if result.reported_error:
+                    download_error = self.tr(
+                        "error.steamcmd_download_rejected",
+                        steam_error=result.reported_error,
+                    )
+                elif result.exit_code != 0:
+                    download_error = self.tr("error.steamcmd_exit_code", exit_code=result.exit_code)
+                elif not source_path.exists():
+                    download_error = self.tr("error.downloaded_folder_missing", path=source_path)
+                else:
+                    download_error = ""
+                success = not download_error
                 if success:
                     target_path = steamcmd.move_downloaded_mod(
                         temp_install_dir,
@@ -1354,9 +1370,9 @@ class App(Tk):
                         last_downloaded_at=mod.last_downloaded_at,
                         download_status="error",
                         new_version_available=mod.new_version_available,
-                        last_error=f"SteamCMD exit code {result.exit_code}",
+                        last_error=download_error,
                     )
-                    self.output_queue.put(("log", self.tr("log.failed_mod", mod_name=mod_name, exit_code=result.exit_code)))
+                    self.output_queue.put(("log", self.tr("log.error_mod", mod_name=mod_name, error=download_error)))
                 self.db.insert_download_record(
                     game_id=game.id,
                     mod_id=mod.id,

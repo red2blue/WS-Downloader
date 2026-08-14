@@ -2,6 +2,17 @@
 
 Alle nennenswerten Aenderungen an `WS Downloader` werden hier dokumentiert.
 
+## v0.8.1 - 2026-08-14
+
+### Geaendert
+
+- `force_install_dir` wird entsprechend der SteamCMD-Vorgabe vor dem Login gesetzt
+
+### Behoben
+
+- Von SteamCMD gemeldete Workshop-Downloadfehler werden auch bei einem fehlerhaften Exit-Code `0` erkannt
+- Bei abgelehnten anonymen Workshop-Downloads wird die tatsaechliche SteamCMD-Fehlermeldung mit einem verstaendlichen Hinweis ausgegeben, statt einen fehlenden Downloadordner als Ursache zu melden
+
 ## v0.8 - 2026-05-19
 
 ### Hinzugefuegt
@@ -33,7 +44,3 @@ Alle nennenswerten Aenderungen an `WS Downloader` werden hier dokumentiert.
 - Bestehende installierte Mod-Ordner werden bei Bedarf auf den konfigurierten Zielordnernamen umbenannt
 - Vorhandene Workshop-ID-Ordner werden beim Laden der Modliste mit gespeicherten Zielordnernamen abgeglichen
 - Download-Zielpfad nutzt bei gesetztem Zielordnernamen den lokalen benutzerdefinierten Ordner statt nur die Workshop-ID
-
-### Hinweise
-
-- `v0.8` ist der aktuelle in der UI angezeigte Versionsstand.

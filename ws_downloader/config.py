@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 APP_NAME = "WS Downloader"
-APP_VERSION = "v0.8"
+APP_VERSION = "v0.8.1"
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = Path(
     os.environ.get(
