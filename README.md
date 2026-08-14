@@ -32,3 +32,9 @@ Das Tool richtet sich an Spiele, bei denen Workshop-Mods lokal in einen bestimmt
 - Fuer den Download ist eine Internetverbindung erforderlich.
 - SteamCMD kann je nach Spiel anonyme Workshop-Downloads erlauben oder ablehnen. Das ist eine Steam-/Spiel-Einschraenkung.
 - Die Zuordnung zur Workshop-ID bleibt gespeichert, auch wenn lokal ein anderer Zielordnername verwendet wird.
+
+## KI-Unterstuetzung und Haftung
+
+Dieses Projekt und sein Quellcode wurden mit Unterstuetzung generativer KI entwickelt. Obwohl die Ergebnisse geprueft und praktisch getestet wurden, koennen Fehler, unerwartetes Verhalten oder Inkompatibilitaeten nicht ausgeschlossen werden.
+
+Die Software wird ohne Gewaehrleistung bereitgestellt. Die Nutzung erfolgt auf eigene Verantwortung und eigenes Risiko. Die Autoren und Mitwirkenden haften nicht fuer Schaeden, Datenverluste oder sonstige Folgen, die unmittelbar oder mittelbar aus der Installation oder Verwendung der Software entstehen.
