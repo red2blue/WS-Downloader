@@ -6,7 +6,12 @@ dist/
 *.pyc
 *.pyo
 *.db-journal
+*.sqlite3
 *.sqlite3-journal
 app_data/
 .scratch_*/
 .scratch_*
+.codex_tmp/
+.codex_*
+*conflicted*
+Session.txt

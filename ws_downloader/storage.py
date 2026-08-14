@@ -146,6 +146,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     game_id TEXT NOT NULL,
                     workshop_item_id TEXT NOT NULL,
+                    install_folder_name TEXT NOT NULL DEFAULT '',
                     mod_name TEXT NOT NULL,
                     mod_url TEXT NOT NULL,
                     mod_version TEXT NOT NULL DEFAULT '',
@@ -161,6 +162,9 @@ class Database:
                 )
                 """
             )
+            mod_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(mods)").fetchall()}
+            if "install_folder_name" not in mod_columns:
+                conn.execute("ALTER TABLE mods ADD COLUMN install_folder_name TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS downloads (
@@ -240,6 +244,7 @@ class Database:
                     """
                     UPDATE mods
                     SET mod_name = ?,
+                        install_folder_name = ?,
                         mod_url = ?,
                         mod_version = ?,
                         compatible_game_version = ?,
@@ -253,6 +258,7 @@ class Database:
                     """,
                     (
                         mod.mod_name,
+                        mod.install_folder_name,
                         mod.mod_url,
                         mod.mod_version,
                         mod.compatible_game_version,
@@ -269,14 +275,15 @@ class Database:
             cursor = conn.execute(
                 """
                 INSERT INTO mods(
-                    game_id, workshop_item_id, mod_name, mod_url, mod_version,
+                    game_id, workshop_item_id, install_folder_name, mod_name, mod_url, mod_version,
                     compatible_game_version, new_version_available, remote_updated_at,
                     last_downloaded_at, download_status, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mod.game_id,
                     mod.workshop_item_id,
+                    mod.install_folder_name,
                     mod.mod_name,
                     mod.mod_url,
                     mod.mod_version,
@@ -377,6 +384,7 @@ class Database:
                 UPDATE mods
                 SET game_id = ?,
                     workshop_item_id = ?,
+                    install_folder_name = ?,
                     mod_name = ?,
                     mod_url = ?,
                     mod_version = ?,
@@ -393,6 +401,7 @@ class Database:
                 (
                     mod.game_id,
                     mod.workshop_item_id,
+                    mod.install_folder_name,
                     mod.mod_name,
                     mod.mod_url,
                     mod.mod_version,
@@ -452,6 +461,7 @@ class Database:
             id=int(row["id"]),
             game_id=str(row["game_id"]),
             workshop_item_id=str(row["workshop_item_id"]),
+            install_folder_name=str(row["install_folder_name"]),
             mod_name=str(row["mod_name"]),
             mod_url=str(row["mod_url"]),
             mod_version=str(row["mod_version"]),
@@ -470,6 +480,7 @@ def create_mod(
     *,
     game_id: str,
     workshop_item_id: str,
+    install_folder_name: str = "",
     mod_url: str,
     mod_name: str,
     mod_version: str = "",
@@ -487,6 +498,7 @@ def create_mod(
         id=None,
         game_id=game_id,
         workshop_item_id=workshop_item_id,
+        install_folder_name=install_folder_name,
         mod_name=mod_name,
         mod_url=mod_url,
         mod_version=mod_version,

@@ -26,6 +26,7 @@ class Mod:
     id: Optional[int]
     game_id: str
     workshop_item_id: str
+    install_folder_name: str
     mod_name: str
     mod_url: str
     mod_version: str

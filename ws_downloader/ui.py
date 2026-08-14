@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import queue
 import locale as py_locale
+import shutil
 import threading
+import traceback
 import uuid
 import webbrowser
+import tkinter.font as tkfont
 from dataclasses import replace
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Label, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 
-from .config import APP_NAME, get_app_paths
+from .config import APP_NAME, APP_VERSION, get_app_paths
 from .i18n import DEFAULT_LANGUAGE, TranslationManager
 from .metadata import derive_workshop_item_url, derive_workshop_url, fetch_public_app_name, fetch_workshop_metadata
 from .models import Game, Mod
@@ -21,22 +24,58 @@ from .storage import Database, GameStore, create_mod, game_id_from_appid, utc_no
 
 
 LANGUAGE_CODES = ("de", "en")
+INVALID_WINDOWS_FOLDER_CHARS = set('<>:"/\\|?*')
 
 
 def center_window_over_parent(parent: Tk, window: Toplevel) -> None:
-    """Center a child window over its parent."""
+    """Center a child window over its parent when possible."""
 
     window.update_idletasks()
     parent.update_idletasks()
-    parent_x = parent.winfo_rootx()
-    parent_y = parent.winfo_rooty()
+    window_width = max(window.winfo_reqwidth(), window.winfo_width())
+    window_height = max(window.winfo_reqheight(), window.winfo_height())
     parent_width = parent.winfo_width()
     parent_height = parent.winfo_height()
-    window_width = window.winfo_reqwidth()
-    window_height = window.winfo_reqheight()
-    x = parent_x + max(0, (parent_width - window_width) // 2)
-    y = parent_y + max(0, (parent_height - window_height) // 2)
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    if parent_width > 1 and parent_height > 1:
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        x = parent_x + max(0, (parent_width - window_width) // 2)
+        y = parent_y + max(0, (parent_height - window_height) // 2)
+    else:
+        x = max(0, (screen_width - window_width) // 2)
+        y = max(0, (screen_height - window_height) // 2)
+    if x + window_width > screen_width:
+        x = max(0, screen_width - window_width)
+    if y + window_height > screen_height:
+        y = max(0, screen_height - window_height)
     window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
+
+def show_modal_window(parent: Tk, window: Toplevel) -> None:
+    """Make a modal window visible, centered, and focused."""
+
+    window.deiconify()
+    window.wait_visibility()
+    window.update_idletasks()
+    center_window_over_parent(parent, window)
+    window.lift()
+    window.focus_force()
+    window.grab_set()
+
+
+def validate_install_folder_name(folder_name: str) -> str | None:
+    """Validate an optional Windows folder name for a local mod install target."""
+
+    normalized = folder_name.strip()
+    if not normalized:
+        return None
+    if any(char in INVALID_WINDOWS_FOLDER_CHARS for char in normalized):
+        return "invalid_chars"
+    if normalized.endswith((" ", ".")):
+        return "invalid_suffix"
+    return None
 
 
 class Tooltip:
@@ -130,7 +169,6 @@ class GameDialog:
         self.window = Toplevel(parent)
         self.window.title(title)
         self.window.transient(parent)
-        self.window.grab_set()
         self.window.resizable(False, False)
 
         self.appid_var = StringVar(value=str(game.steam_app_id) if game else "")
@@ -170,7 +208,7 @@ class GameDialog:
         self.window.protocol("WM_DELETE_WINDOW", self._cancel)
         self.window.bind("<Return>", lambda _event: self._save())
         self.window.bind("<Escape>", lambda _event: self._cancel())
-        center_window_over_parent(parent, self.window)
+        show_modal_window(self.parent, self.window)
 
     def _browse_path(self) -> None:
         folder = filedialog.askdirectory(parent=self.window, title=self.tr("dialog.game.mods_path_title"))
@@ -199,39 +237,102 @@ class ModDialog:
 
     def __init__(self, parent, title: str, mod: Mod | None = None):
         self.parent = parent
+        self.mod = mod
         self.tr = parent.i18n.translate
         self.result: dict[str, str] | None = None
         self._tooltips: list[Tooltip] = []
         self.window = Toplevel(parent)
         self.window.title(title)
         self.window.transient(parent)
-        self.window.grab_set()
         self.window.resizable(False, False)
 
         self.item_id_var = StringVar(value=mod.workshop_item_id if mod else "")
+        self.install_folder_name_var = StringVar(value=mod.install_folder_name if mod else "")
+        self.install_folder_mode_var = StringVar()
 
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill=BOTH, expand=True)
 
         ttk.Label(frame, text=self.tr("dialog.mod.item_id")).grid(row=0, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=self.item_id_var, width=54).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(frame, text=self.tr("dialog.mod.install_folder_name")).grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.install_folder_name_var, width=54).grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Button(frame, text=self.tr("buttons.use_file_name"), command=self._use_file_name).grid(
+            row=1, column=2, padx=(8, 0), pady=4
+        )
+        ttk.Label(frame, text=self.tr("dialog.mod.install_folder_help"), justify="left").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(2, 0)
+        )
+        ttk.Label(frame, textvariable=self.install_folder_mode_var).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
+        )
 
         button_row = ttk.Frame(frame)
-        button_row.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        button_row.grid(row=4, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(button_row, text=self.tr("buttons.cancel"), command=self._cancel).pack(side=RIGHT, padx=(8, 0))
         ttk.Button(button_row, text=self.tr("buttons.save"), command=self._save).pack(side=RIGHT)
         frame.columnconfigure(1, weight=1)
         self.window.protocol("WM_DELETE_WINDOW", self._cancel)
         self.window.bind("<Return>", lambda _event: self._save())
         self.window.bind("<Escape>", lambda _event: self._cancel())
-        center_window_over_parent(parent, self.window)
+        self.install_folder_name_var.trace_add("write", self._refresh_install_folder_mode)
+        self._refresh_install_folder_mode()
+        show_modal_window(self.parent, self.window)
+
+    def _use_file_name(self) -> None:
+        dialog_options = {
+            "parent": self.window,
+            "title": self.tr("dialog.mod.select_file_title"),
+        }
+        initialdir = self._initial_file_dialog_dir()
+        if initialdir is not None:
+            dialog_options["initialdir"] = str(initialdir)
+        path = filedialog.askopenfilename(**dialog_options)
+        if path:
+            self.install_folder_name_var.set(Path(path).stem)
+
+    def _initial_file_dialog_dir(self) -> Path | None:
+        current_game = getattr(self.parent, "current_game", None)
+        if current_game is None:
+            return None
+        mods_path = Path(current_game.mods_path)
+        if self.mod is not None:
+            candidate_names = [self.mod.install_folder_name.strip(), self.mod.workshop_item_id]
+            for candidate_name in candidate_names:
+                if not candidate_name:
+                    continue
+                candidate_path = mods_path / candidate_name
+                if candidate_path.exists() and candidate_path.is_dir():
+                    return candidate_path
+        if mods_path.exists() and mods_path.is_dir():
+            return mods_path
+        return None
+
+    def _refresh_install_folder_mode(self, *_args) -> None:
+        folder_name = self.install_folder_name_var.get().strip()
+        if folder_name:
+            mode_text = self.tr("dialog.mod.install_folder_mode_custom", folder_name=folder_name)
+        else:
+            mode_text = self.tr("dialog.mod.install_folder_mode_default")
+        self.install_folder_mode_var.set(mode_text)
 
     def _save(self) -> None:
         item_id = self.item_id_var.get().strip()
+        install_folder_name = self.install_folder_name_var.get().strip()
         if not item_id.isdigit():
             messagebox.showerror(APP_NAME, self.tr("message.modid_numeric"), parent=self.window)
             return
-        self.result = {"workshop_item_id": item_id}
+        validation_error = validate_install_folder_name(install_folder_name)
+        if validation_error == "invalid_chars":
+            messagebox.showerror(APP_NAME, self.tr("message.install_folder_invalid_chars"), parent=self.window)
+            return
+        if validation_error == "invalid_suffix":
+            messagebox.showerror(APP_NAME, self.tr("message.install_folder_invalid_suffix"), parent=self.window)
+            return
+        self.result = {
+            "workshop_item_id": item_id,
+            "install_folder_name": install_folder_name,
+        }
         self.window.destroy()
 
     def _cancel(self) -> None:
@@ -242,6 +343,8 @@ class ModDialog:
 class SteamCMDDialog:
     """Dialog shown when SteamCMD is missing or not yet configured."""
 
+    INSTALL_RESULT = "__install_steamcmd__"
+
     def __init__(self, parent, docs_url: str):
         self.parent = parent
         self.tr = parent.i18n.translate
@@ -251,7 +354,6 @@ class SteamCMDDialog:
         self.window = Toplevel(parent)
         self.window.title(self.tr("dialog.steamcmd.title"))
         self.window.transient(parent)
-        self.window.grab_set()
         self.window.resizable(False, False)
 
         frame = ttk.Frame(self.window, padding=12)
@@ -264,17 +366,20 @@ class SteamCMDDialog:
 
         button_row = ttk.Frame(frame)
         button_row.pack(fill=X, pady=(4, 0))
+        install_button = ttk.Button(button_row, text=self.tr("buttons.install_steamcmd"), command=self._install)
+        install_button.pack(side=LEFT)
         select_button = ttk.Button(button_row, text=self.tr("buttons.select_steamcmd"), command=self._select_path)
-        select_button.pack(side=LEFT)
+        select_button.pack(side=LEFT, padx=(8, 0))
         open_docs_button = ttk.Button(button_row, text=self.tr("buttons.open_docs"), command=lambda: webbrowser.open(self.docs_url))
         open_docs_button.pack(side=LEFT, padx=8)
         later_button = ttk.Button(button_row, text=self.tr("buttons.later"), command=self._later)
         later_button.pack(side=RIGHT)
+        self._tooltips.append(Tooltip(install_button, lambda: self.tr("tooltip.install_steamcmd")))
         self._tooltips.append(Tooltip(select_button, lambda: self.tr("tooltip.select_steamcmd")))
         self._tooltips.append(Tooltip(open_docs_button, lambda: self.tr("tooltip.open_docs")))
         self._tooltips.append(Tooltip(later_button, lambda: self.tr("tooltip.later")))
         self.window.protocol("WM_DELETE_WINDOW", self._later)
-        center_window_over_parent(parent, self.window)
+        show_modal_window(self.parent, self.window)
 
     def _select_path(self) -> None:
         path = filedialog.askopenfilename(
@@ -289,6 +394,10 @@ class SteamCMDDialog:
         if path:
             self.result = path
             self.window.destroy()
+
+    def _install(self) -> None:
+        self.result = self.INSTALL_RESULT
+        self.window.destroy()
 
     def _later(self) -> None:
         self.result = ""
@@ -314,13 +423,15 @@ class App(Tk):
         self.checked_mod_ids: set[int] = set()
         self._pending_game_name_backfills: set[int] = set()
         self._pending_mod_name_backfills: set[int] = set()
+        self._steamcmd_update_running = False
+        self._steamcmd_install_running = False
         self._tooltips: list[Tooltip] = []
 
         saved_steamcmd = self.db.get_setting("steamcmd_path", "")
         self.steamcmd_manager = SteamCMDManager(saved_steamcmd)
         self.steamcmd_path = self.steamcmd_manager.discover()
         if self.steamcmd_path:
-            self.db.set_setting("steamcmd_path", str(self.steamcmd_path))
+            self._set_steamcmd_path(self.steamcmd_path)
 
         self.title(self.tr("app.title"))
         self.geometry("1200x740")
@@ -400,7 +511,7 @@ class App(Tk):
         middle = ttk.Frame(self, padding=(8, 4, 8, 4))
         middle.grid(row=1, column=0, sticky="nsew")
         middle.columnconfigure(0, weight=1)
-        middle.rowconfigure(1, weight=1)
+        middle.rowconfigure(2, weight=1)
 
         mod_header = ttk.Frame(middle)
         mod_header.grid(row=0, column=0, sticky="ew")
@@ -429,10 +540,22 @@ class App(Tk):
         self._add_tooltip(self.download_button, "tooltip.download")
         self._add_tooltip(self.update_button, "tooltip.update")
 
+        mod_select_bar = ttk.Frame(middle)
+        mod_select_bar.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.select_all_mods_button = ttk.Button(
+            mod_select_bar,
+            text=self.tr("buttons.select_all_mods"),
+            command=self._select_all_mods,
+            width=5,
+        )
+        self.select_all_mods_button.pack(side=LEFT)
+        self._add_tooltip(self.select_all_mods_button, "tooltip.select_all_mods")
+
         columns = (
             "selected",
             "name",
             "item_id",
+            "install_folder",
             "version",
             "remote_updated",
             "compatible_game_version",
@@ -446,6 +569,7 @@ class App(Tk):
             "selected": "headings.selected",
             "name": "headings.mod_name",
             "item_id": "headings.item_id",
+            "install_folder": "headings.install_folder",
             "version": "headings.version",
             "remote_updated": "headings.remote_updated",
             "compatible_game_version": "headings.compatible_game_version",
@@ -458,6 +582,7 @@ class App(Tk):
             "selected": 48,
             "name": 210,
             "item_id": 108,
+            "install_folder": 190,
             "version": 122,
             "remote_updated": 136,
             "compatible_game_version": 108,
@@ -469,24 +594,26 @@ class App(Tk):
         for key in columns:
             self.mod_tree.heading(key, text=self.tr(self.mod_headings[key]), anchor="center")
             self.mod_tree.column(key, width=widths[key], anchor="center", stretch=True)
-        self.mod_tree.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        self.mod_tree.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         self.mod_tree.bind("<Button-1>", self._on_mod_click)
         self.mod_tree.bind("<Double-1>", lambda _event: self._edit_mod())
         self._add_tooltip(self.mod_tree, "tooltip.mod_table")
+        self.mod_update_font = tkfont.nametofont("TkDefaultFont").copy()
+        self.mod_update_font.configure(weight="bold")
         self.mod_tree.tag_configure("status_new", background="#f4f7fb")
-        self.mod_tree.tag_configure("status_update", background="#fff2d8")
+        self.mod_tree.tag_configure("status_update", background="#ffd6d6", font=self.mod_update_font)
         self.mod_tree.tag_configure("status_downloaded", background="#e6f6ea")
         self.mod_tree.tag_configure("status_error", background="#fde8e8")
 
         mod_scroll = ttk.Scrollbar(middle, orient="vertical", command=self.mod_tree.yview)
         self.mod_tree.configure(yscrollcommand=mod_scroll.set)
-        mod_scroll.grid(row=1, column=1, sticky="ns", pady=(6, 0))
+        mod_scroll.grid(row=2, column=1, sticky="ns", pady=(6, 0))
 
         legend = ttk.Frame(middle)
-        legend.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        legend.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         ttk.Label(legend, text=self.tr("legend.title")).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._legend_item(legend, 0, "#f4f7fb", self.tr("legend.new"))
-        self._legend_item(legend, 1, "#fff2d8", self.tr("legend.update_available"))
+        self._legend_item(legend, 1, "#ffd6d6", self.tr("legend.update_available"))
         self._legend_item(legend, 2, "#e6f6ea", self.tr("legend.downloaded"))
         self._legend_item(legend, 3, "#fde8e8", self.tr("legend.error"))
 
@@ -510,9 +637,14 @@ class App(Tk):
         self.log_widget.configure(yscrollcommand=log_scroll.set)
         self.log_widget.configure(state="disabled")
 
+        status_bar = ttk.Frame(self)
+        status_bar.grid(row=3, column=0, sticky="ew")
+        status_bar.columnconfigure(0, weight=1)
         self.status_var = StringVar(value=self.tr("status.ready"))
-        status = ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w")
-        status.grid(row=3, column=0, sticky="ew")
+        status = ttk.Label(status_bar, textvariable=self.status_var, relief="sunken", anchor="w")
+        status.grid(row=0, column=0, sticky="ew")
+        self.version_label = ttk.Label(status_bar, text=APP_VERSION, relief="sunken", anchor="e", width=8)
+        self.version_label.grid(row=0, column=1, sticky="e")
         self._add_tooltip(status, "tooltip.status_bar")
 
         self._apply_translations()
@@ -534,10 +666,10 @@ class App(Tk):
 
         if mod.download_status == "error":
             return self.tr("mod.status.error"), "status_error"
-        if mod.download_status == "downloaded":
-            return self.tr("mod.status.downloaded"), "status_downloaded"
         if mod.new_version_available:
             return self.tr("mod.status.update_available"), "status_update"
+        if mod.download_status == "downloaded":
+            return self.tr("mod.status.downloaded"), "status_downloaded"
         return self.tr("mod.status.new"), "status_new"
 
     def _available_language_codes(self) -> list[str]:
@@ -575,6 +707,7 @@ class App(Tk):
         self.add_mod_button.configure(text=self.tr("buttons.add"))
         self.edit_mod_button.configure(text=self.tr("buttons.edit"))
         self.delete_mod_button.configure(text=self.tr("buttons.delete"))
+        self.select_all_mods_button.configure(text=self.tr("buttons.select_all_mods"))
         self.check_updates_button.configure(text=self.tr("buttons.check_updates"))
         self.download_button.configure(text=self.tr("buttons.download"))
         self.update_button.configure(text=self.tr("buttons.update"))
@@ -682,6 +815,7 @@ class App(Tk):
             self.status_var.set(self.tr("status.ready"))
             return
         mods = self.db.list_mods(self.current_game.id)
+        self._reconcile_mod_install_paths(self.current_game, mods)
         for mod in mods:
             self._insert_mod_row(mod)
         self._schedule_mod_name_backfill(mods)
@@ -703,7 +837,7 @@ class App(Tk):
         mod: Mod,
         selected: str | None = None,
         status_text: str | None = None,
-    ) -> tuple[str, str, str, str, str, str, str, str, str, str]:
+    ) -> tuple[str, str, str, str, str, str, str, str, str, str, str]:
         """Build the localized values tuple for a mod table row."""
 
         localized_status = status_text or self._mod_status_data(mod)[0]
@@ -711,6 +845,7 @@ class App(Tk):
             selected or (self.tr("mod.selected.yes") if mod.id in self.checked_mod_ids else self.tr("mod.selected.no")),
             mod.mod_name,
             mod.workshop_item_id,
+            mod.install_folder_name or mod.workshop_item_id,
             mod.mod_version,
             mod.remote_updated_at,
             mod.compatible_game_version,
@@ -730,10 +865,75 @@ class App(Tk):
                 mods.append(mod)
         return mods
 
+    def _select_all_mods(self) -> None:
+        """Toggle selection for all visible mods."""
+
+        if not self.current_game:
+            messagebox.showinfo(APP_NAME, self.tr("message.select_game"), parent=self)
+            return
+        mods = self.db.list_mods(self.current_game.id)
+        visible_mod_ids = {mod.id for mod in mods if mod.id is not None}
+        if visible_mod_ids and visible_mod_ids.issubset(self.checked_mod_ids):
+            self.checked_mod_ids.difference_update(visible_mod_ids)
+        else:
+            self.checked_mod_ids.update(visible_mod_ids)
+        self._refresh_mod_rows()
+
+    def _refresh_mod_rows(self) -> None:
+        """Refresh existing mod rows after selection changes."""
+
+        for row_id in self.mod_tree.get_children():
+            mod = self.db.get_mod(int(row_id))
+            if not mod:
+                continue
+            status_text, tag = self._mod_status_data(mod)
+            self.mod_tree.item(row_id, values=self._mod_row_values(mod, status_text=status_text), tags=(tag,))
+
     def _effective_version_stamp(self, metadata, fallback: str = "") -> str:
         if metadata and getattr(metadata, "time_updated", ""):
             return metadata.time_updated
         return fallback or utc_now()
+
+    @staticmethod
+    def _effective_install_folder_name(mod: Mod) -> str:
+        """Return the folder name actually used on disk for a mod."""
+
+        return mod.install_folder_name.strip() or mod.workshop_item_id
+
+    def _mod_install_path(self, game: Game, mod: Mod) -> Path:
+        """Return the configured on-disk install path for a mod."""
+
+        return Path(game.mods_path) / self._effective_install_folder_name(mod)
+
+    def _rename_installed_mod_folder_if_needed(self, game: Game, old_mod: Mod, new_mod: Mod) -> None:
+        """Rename an already installed mod folder when the target folder name changes."""
+
+        old_path = self._mod_install_path(game, old_mod)
+        new_path = self._mod_install_path(game, new_mod)
+        if old_path == new_path or not old_path.exists():
+            return
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        if new_path.exists():
+            shutil.rmtree(new_path)
+        old_path.rename(new_path)
+        self._append_log(self.tr("log.mod_install_folder_renamed", old_path=old_path, new_path=new_path))
+
+    def _reconcile_mod_install_paths(self, game: Game, mods: list[Mod]) -> None:
+        """Align on-disk mod folders with configured custom target folder names."""
+
+        for mod in mods:
+            if not mod.install_folder_name.strip():
+                continue
+            legacy_id_mod = replace(mod, install_folder_name="")
+            legacy_path = self._mod_install_path(game, legacy_id_mod)
+            target_path = self._mod_install_path(game, mod)
+            if legacy_path == target_path:
+                continue
+            if not legacy_path.exists() or target_path.exists():
+                continue
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_path.rename(target_path)
+            self._append_log(self.tr("log.mod_install_folder_renamed", old_path=legacy_path, new_path=target_path))
 
     def _schedule_game_name_backfill(self, games: list[Game]) -> None:
         """Start background lookups for games that still lack a public name."""
@@ -775,6 +975,13 @@ class App(Tk):
             self.games.upsert_game(updated)
             self.output_queue.put(("log", self.tr("log.game_name_resolved", game_name=game_name)))
             self.output_queue.put(("refresh_games", game.id))
+        except Exception as exc:
+            self.output_queue.put(
+                (
+                    "log",
+                    f"[backfill-game] failed for app_id={game.steam_app_id}: {exc}\n{traceback.format_exc()}",
+                )
+            )
         finally:
             self._pending_game_name_backfills.discard(game.steam_app_id)
 
@@ -795,6 +1002,13 @@ class App(Tk):
             )
             self.output_queue.put(("log", self.tr("log.mod_name_resolved", mod_name=metadata.title)))
             self.output_queue.put(("refresh", mod.game_id))
+        except Exception as exc:
+            self.output_queue.put(
+                (
+                    "log",
+                    f"[backfill-mod] failed for workshop_item_id={mod.workshop_item_id}: {exc}\n{traceback.format_exc()}",
+                )
+            )
         finally:
             if mod.id is not None:
                 self._pending_mod_name_backfills.discard(mod.id)
@@ -829,12 +1043,33 @@ class App(Tk):
         app_id = int(dialog.result["steam_app_id"])
         mods_path = dialog.result["mods_path"]
         game_id = game_id_from_appid(app_id)
+        self._append_log(f"[add-game] requested app_id={app_id} mods_path={mods_path}")
         if self.games.get_game(game_id):
+            self._append_log(f"[add-game] skipped duplicate game_id={game_id} app_id={app_id}")
             messagebox.showerror(APP_NAME, self.tr("message.game_exists"), parent=self)
             return
         self.status_var.set(self.tr("message.resolve_game_metadata"))
-        thread = threading.Thread(target=self._create_game_worker, args=(app_id, mods_path), daemon=True)
-        thread.start()
+        try:
+            game = Game(
+                id=game_id,
+                steam_app_id=app_id,
+                game_name="",
+                workshop_url=derive_workshop_url(app_id),
+                mods_path=mods_path,
+                created_at=utc_now(),
+                updated_at=utc_now(),
+            )
+            self.games.upsert_game(game)
+            fallback_name = self.tr("game.fallback.app", app_id=app_id)
+            self._append_log(self.tr("log.game_added", game_name=fallback_name, app_id=app_id))
+            self.db.set_setting("last_selected_game_id", game.id)
+            self.current_game_id = game.id
+            self._load_games()
+            self._select_game_by_id(game.id)
+            self.status_var.set(self.tr("status.game_added", game_name=fallback_name))
+        except Exception as exc:
+            self._append_log(f"[add-game] failed for app_id={app_id} mods_path={mods_path}: {exc}\n{traceback.format_exc()}")
+            messagebox.showerror(APP_NAME, f"Could not add game: {exc}", parent=self)
 
     def _edit_game(self) -> None:
         """Edit the currently selected game."""
@@ -862,25 +1097,6 @@ class App(Tk):
         self.db.set_setting("last_selected_game_id", game.id)
         self._append_log(self.tr("log.game_updated", game_id=game.id))
         self._load_games()
-
-    def _create_game_worker(self, app_id: int, mods_path: str) -> None:
-        """Background worker that resolves game metadata and persists it."""
-
-        game_id = game_id_from_appid(app_id)
-        game_name = fetch_public_app_name(app_id) or self.tr("game.fallback.app", app_id=app_id)
-        game = Game(
-            id=game_id,
-            steam_app_id=app_id,
-            game_name=game_name,
-            workshop_url=derive_workshop_url(app_id),
-            mods_path=mods_path,
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        )
-        self.games.upsert_game(game)
-        self.output_queue.put(("log", self.tr("log.game_added", game_name=game_name, app_id=app_id)))
-        self.output_queue.put(("refresh_games", game.id))
-        self.output_queue.put(("status", self.tr("status.game_added", game_name=game_name)))
 
     def _make_temp_install_dir(self, game: Game, mod: Mod) -> Path:
         """Return a unique temporary install directory for a download."""
@@ -912,6 +1128,7 @@ class App(Tk):
         if not dialog.result:
             return
         workshop_item_id = dialog.result["workshop_item_id"]
+        install_folder_name = dialog.result["install_folder_name"]
         url = derive_workshop_item_url(workshop_item_id)
         metadata = fetch_workshop_metadata(workshop_item_id)
         mod_name = metadata.title if metadata else self.tr("mod.fallback.workshop", workshop_item_id=workshop_item_id)
@@ -920,6 +1137,7 @@ class App(Tk):
         mod = create_mod(
             game_id=self.current_game.id,
             workshop_item_id=workshop_item_id,
+            install_folder_name=install_folder_name,
             mod_url=url,
             mod_name=mod_name,
             mod_version=remote_updated_at,
@@ -954,6 +1172,7 @@ class App(Tk):
         if not dialog.result:
             return
         workshop_item_id = dialog.result["workshop_item_id"]
+        install_folder_name = dialog.result["install_folder_name"]
         url = derive_workshop_item_url(workshop_item_id)
         metadata = fetch_workshop_metadata(workshop_item_id)
         mod_name = metadata.title if metadata else mod.mod_name
@@ -962,6 +1181,7 @@ class App(Tk):
         updated_mod = replace(
             mod,
             workshop_item_id=workshop_item_id,
+            install_folder_name=install_folder_name,
             mod_url=url,
             mod_name=mod_name,
             mod_version=mod.mod_version or remote_updated_at,
@@ -971,6 +1191,8 @@ class App(Tk):
         )
         try:
             self.db.update_mod_by_id(updated_mod)
+            if self.current_game:
+                self._rename_installed_mod_folder_if_needed(self.current_game, mod, updated_mod)
         except Exception as exc:
             messagebox.showerror(APP_NAME, self.tr("message.could_not_update_mod", error=exc), parent=self)
             return
@@ -1108,7 +1330,11 @@ class App(Tk):
                         Path(game.mods_path),
                         game.steam_app_id,
                         mod.workshop_item_id,
+                        mod.install_folder_name,
                     )
+                    legacy_id_path = Path(game.mods_path) / mod.workshop_item_id
+                    if mod.install_folder_name and legacy_id_path != target_path and legacy_id_path.exists():
+                        shutil.rmtree(legacy_id_path)
                     stored_version = remote_updated_at or finished_at or mod.mod_version
                     self.db.update_mod_download_result(
                         mod.id,
@@ -1180,6 +1406,13 @@ class App(Tk):
                     self._refresh_mods()
                 elif kind == "refresh_games":
                     self._load_games()
+                elif kind == "select_game":
+                    self.current_game_id = payload
+                    self._load_games()
+                elif kind == "steamcmd_path":
+                    self._set_steamcmd_path(Path(payload))
+                    self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
+                    self._append_log(self.tr("log.steamcmd_configured", path=self.steamcmd_path))
                 elif kind == "status":
                     self.status_var.set(payload)
         except queue.Empty:
@@ -1191,36 +1424,108 @@ class App(Tk):
 
         if self.steamcmd_path:
             self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
+            self._start_steamcmd_update_check()
             return
         dialog = SteamCMDDialog(self, "https://developer.valvesoftware.com/wiki/SteamCMD")
         self.wait_window(dialog.window)
         if dialog.result is None:
             return
+        if dialog.result == SteamCMDDialog.INSTALL_RESULT:
+            self._start_steamcmd_install()
+            return
         if dialog.result:
-            self.steamcmd_path = Path(dialog.result)
-            self.db.set_setting("steamcmd_path", str(self.steamcmd_path))
+            self._set_steamcmd_path(Path(dialog.result))
             self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
             self._append_log(self.tr("log.steamcmd_configured", path=self.steamcmd_path))
+            self._start_steamcmd_update_check()
         else:
             self.status_var.set(self.tr("status.steamcmd_not_configured"))
 
     def _configure_steamcmd(self) -> None:
-        """Open a file picker so the user can configure SteamCMD manually."""
+        """Configure SteamCMD or trigger a manual self-update check."""
 
-        path = filedialog.askopenfilename(
-            parent=self,
-            title=self.tr("dialog.steamcmd.select_path_title"),
-            filetypes=[
-                (self.tr("steamcmd.filetype"), "steamcmd.exe"),
-                (self.tr("dialog.steamcmd.filetype_exe"), "*.exe"),
-                (self.tr("dialog.steamcmd.filetype_all"), "*.*"),
-            ],
-        )
-        if path:
-            self.steamcmd_path = Path(path)
-            self.db.set_setting("steamcmd_path", path)
+        if self.steamcmd_path:
+            self._start_steamcmd_update_check()
+            return
+
+        dialog = SteamCMDDialog(self, "https://developer.valvesoftware.com/wiki/SteamCMD")
+        self.wait_window(dialog.window)
+        if dialog.result == SteamCMDDialog.INSTALL_RESULT:
+            self._start_steamcmd_install()
+        elif dialog.result:
+            self._set_steamcmd_path(Path(dialog.result))
             self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
             self._append_log(self.tr("log.steamcmd_configured", path=self.steamcmd_path))
+            self._start_steamcmd_update_check()
+
+    def _set_steamcmd_path(self, path: Path) -> None:
+        """Persist and cache the active SteamCMD executable path."""
+
+        self.steamcmd_path = path
+        self.steamcmd_manager.saved_path = str(path)
+        self.db.set_setting("steamcmd_path", str(path))
+
+    def _default_steamcmd_install_dir(self) -> Path:
+        """Return the managed SteamCMD install directory."""
+
+        return self.paths.base_dir / "SteamCMD"
+
+    def _start_steamcmd_install(self) -> None:
+        """Install SteamCMD in the managed app data directory."""
+
+        if self._steamcmd_install_running:
+            return
+        self._steamcmd_install_running = True
+        install_dir = self._default_steamcmd_install_dir()
+        self.status_var.set(self.tr("status.steamcmd_installing"))
+        self._append_log(self.tr("log.steamcmd_install_started", path=install_dir))
+        thread = threading.Thread(target=self._steamcmd_install_worker, args=(install_dir,), daemon=True)
+        thread.start()
+
+    def _steamcmd_install_worker(self, install_dir: Path) -> None:
+        """Download and prepare SteamCMD in the background."""
+
+        try:
+            manager = SteamCMDManager()
+            steamcmd_path = manager.install(install_dir, lambda line: self.output_queue.put(("log", line)))
+            self.output_queue.put(("steamcmd_path", str(steamcmd_path)))
+            self.output_queue.put(("log", self.tr("log.steamcmd_install_complete", path=steamcmd_path)))
+            self.output_queue.put(("status", self.tr("status.steamcmd_set", path=steamcmd_path)))
+        except Exception as exc:
+            self.output_queue.put(("log", self.tr("log.steamcmd_install_failed", error=exc)))
+            self.output_queue.put(("status", self.tr("status.steamcmd_install_failed")))
+        finally:
+            self._steamcmd_install_running = False
+
+    def _start_steamcmd_update_check(self) -> None:
+        """Run SteamCMD once so its own updater can apply pending updates."""
+
+        if not self.steamcmd_path or self._steamcmd_update_running:
+            return
+        self._steamcmd_update_running = True
+        steamcmd_path = self.steamcmd_path
+        self.status_var.set(self.tr("status.steamcmd_checking"))
+        self._append_log(self.tr("log.steamcmd_update_check_started", path=steamcmd_path))
+        thread = threading.Thread(target=self._steamcmd_update_worker, args=(steamcmd_path,), daemon=True)
+        thread.start()
+
+    def _steamcmd_update_worker(self, steamcmd_path: Path) -> None:
+        """Run the SteamCMD self-updater in the background."""
+
+        try:
+            manager = SteamCMDManager(str(steamcmd_path))
+            result = manager.run_self_update(steamcmd_path, lambda line: self.output_queue.put(("log", line)))
+            if result.exit_code == 0:
+                self.output_queue.put(("log", self.tr("log.steamcmd_update_check_complete", path=steamcmd_path)))
+                self.output_queue.put(("status", self.tr("status.steamcmd_set", path=steamcmd_path)))
+            else:
+                self.output_queue.put(("log", self.tr("log.steamcmd_update_check_failed", exit_code=result.exit_code)))
+                self.output_queue.put(("status", self.tr("status.steamcmd_update_failed")))
+        except Exception as exc:
+            self.output_queue.put(("log", self.tr("log.steamcmd_update_error", error=exc)))
+            self.output_queue.put(("status", self.tr("status.steamcmd_update_failed")))
+        finally:
+            self._steamcmd_update_running = False
 
 
 def run_app() -> None:

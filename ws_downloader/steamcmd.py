@@ -5,9 +5,14 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+
+STEAMCMD_DOWNLOAD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
 
 
 @dataclass
@@ -110,6 +115,47 @@ class SteamCMDManager:
         exit_code = process.wait()
         return DownloadResult(exit_code=exit_code, output="".join(output_parts))
 
+    def run_self_update(self, steamcmd_path: Path, on_output: Callable[[str], None]) -> DownloadResult:
+        """Start SteamCMD once so it can apply its built-in updater."""
+
+        command = [str(steamcmd_path), "+quit"]
+        on_output(f"Running: {' '.join(command)}")
+        process = subprocess.Popen(
+            command,
+            cwd=str(steamcmd_path.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output_parts: list[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            output_parts.append(line)
+            on_output(line.rstrip())
+        exit_code = process.wait()
+        return DownloadResult(exit_code=exit_code, output="".join(output_parts))
+
+    def install(self, install_dir: Path, on_output: Callable[[str], None]) -> Path:
+        """Download, extract, and self-update SteamCMD for Windows."""
+
+        install_dir.mkdir(parents=True, exist_ok=True)
+        steamcmd_path = install_dir / "steamcmd.exe"
+        on_output(f"Downloading SteamCMD: {STEAMCMD_DOWNLOAD_URL}")
+        with tempfile.TemporaryDirectory(prefix="wsd-steamcmd-") as temp_dir:
+            zip_path = Path(temp_dir) / "steamcmd.zip"
+            urllib.request.urlretrieve(STEAMCMD_DOWNLOAD_URL, zip_path)
+            on_output(f"Extracting SteamCMD to: {install_dir}")
+            with zipfile.ZipFile(zip_path) as archive:
+                archive.extractall(install_dir)
+        if not steamcmd_path.exists():
+            raise FileNotFoundError(f"steamcmd.exe not found after extraction: {steamcmd_path}")
+        result = self.run_self_update(steamcmd_path, on_output)
+        if result.exit_code != 0:
+            raise RuntimeError(f"SteamCMD self-update failed with exit code {result.exit_code}")
+        return steamcmd_path
+
     @staticmethod
     def downloaded_workshop_path(install_dir: Path, app_id: int, workshop_item_id: str) -> Path:
         """Return the path SteamCMD writes for a downloaded workshop item."""
@@ -117,10 +163,10 @@ class SteamCMDManager:
         return install_dir / "steamapps" / "workshop" / "content" / str(app_id) / str(workshop_item_id)
 
     @staticmethod
-    def target_mod_path(mods_path: Path, workshop_item_id: str) -> Path:
+    def target_mod_path(mods_path: Path, folder_name: str) -> Path:
         """Return the final destination path for a downloaded mod."""
 
-        return mods_path / str(workshop_item_id)
+        return mods_path / str(folder_name)
 
     @classmethod
     def move_downloaded_mod(
@@ -129,6 +175,7 @@ class SteamCMDManager:
         mods_path: Path,
         app_id: int,
         workshop_item_id: str,
+        target_folder_name: str = "",
     ) -> Path:
         """Move a completed download into the configured mods directory."""
 
@@ -136,7 +183,7 @@ class SteamCMDManager:
         if not source_path.exists():
             raise FileNotFoundError(f"Downloaded workshop folder not found: {source_path}")
 
-        target_path = cls.target_mod_path(mods_path, workshop_item_id)
+        target_path = cls.target_mod_path(mods_path, target_folder_name or workshop_item_id)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if target_path.exists():
             shutil.rmtree(target_path)
