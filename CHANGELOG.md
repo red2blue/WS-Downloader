@@ -2,6 +2,23 @@
 
 Alle nennenswerten Aenderungen an `WS Downloader` werden hier dokumentiert.
 
+## v0.9 - 2026-08-15
+
+### Hinzugefuegt
+
+- Spieleinstellung fuer Installationen in eigenen Mod-Unterordnern oder direkt im Mod-Verzeichnis
+- Dreistufige Mod-Einstellung: Spieleinstellung verwenden, Unterordner oder direkte Installation
+- Dateimanifeste zur sicheren Zuordnung installierter Dateien zu Spiel und Workshop-ID
+- Konfliktdialog vor dem Ueberschreiben vorhandener oder von anderen Mods verwalteter Dateien
+- Optionales Entfernen der manifestierten Mod-Dateien beim Loeschen eines Mod-Eintrags
+- Automatisierte Tests fuer Installationsmodi, Konflikte, Updates, Deinstallation und Speichermigration
+
+### Geaendert
+
+- Bestehende Spiele und Mods werden automatisch auf die bisherigen Unterordnerregeln migriert
+- Die Zielordnerspalte zeigt direkte Installationen gesondert an
+- Veraltete Dateien einer aktualisierten Mod werden anhand ihres Manifests entfernt, ohne Dateien anderer Mods zu loeschen
+
 ## v0.8.1 - 2026-08-14
 
 ### Geaendert

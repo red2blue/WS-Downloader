@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 APP_NAME = "WS Downloader"
-APP_VERSION = "v0.8.1"
+APP_VERSION = "v0.9"
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = Path(
     os.environ.get(
@@ -25,6 +25,7 @@ class AppPaths:
     base_dir: Path
     db_path: Path
     games_path: Path
+    manifests_dir: Path
     log_dir: Path
     log_path: Path
 
@@ -38,6 +39,7 @@ def get_app_paths() -> AppPaths:
         base_dir=base_dir,
         db_path=base_dir / "ws_downloader.sqlite3",
         games_path=base_dir / "games.json",
+        manifests_dir=base_dir / "install_manifests",
         log_dir=log_dir,
         log_path=log_dir / "downloads.log",
     )

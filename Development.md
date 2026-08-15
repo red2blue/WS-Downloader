@@ -166,6 +166,7 @@ Beispielstruktur:
       "game_name": "Garry's Mod",
       "workshop_url": "https://steamcommunity.com/app/4000/workshop/",
       "mods_path": "D:/SteamWorkshop/GarrysMod",
+      "install_mode": "subfolder",
       "created_at": "2026-04-26T00:00:00Z",
       "updated_at": "2026-04-26T00:00:00Z"
     }
@@ -188,6 +189,8 @@ Vorgesehene Felder fuer `mods`:
 - `id`
 - `game_id`
 - `workshop_item_id`
+- `install_folder_name`
+- `install_mode` (`inherit`, `subfolder` oder `direct`)
 - `mod_name`
 - `mod_url`
 - `mod_version`
@@ -200,6 +203,8 @@ Vorgesehene Felder fuer `mods`:
 - `updated_at`
 
 Hinweis: `game_id` verweist auf die ID aus der JSON-Datei `games.json`, nicht auf eine `games`-Tabelle.
+
+Installierte Dateien werden zusaetzlich pro Spiel und Workshop-ID unter `install_manifests` im App-Datenordner erfasst. Die Manifeste dienen der Konflikterkennung, dem gezielten Entfernen veralteter Dateien bei Updates und der optionalen Deinstallation, ohne gemeinsam verwaltete Dateien zu loeschen.
 
 ## Pruefung: Abrufbarkeit der Mod-Informationen
 
@@ -320,6 +325,9 @@ Ergebnis:
 23. Downloads laufen jetzt ueber einen temporären Arbeitsordner, danach wird nur der Mod-Ordner mit der Workshop-ID in das Zielverzeichnis verschoben.
 24. Die Mod-Liste im unteren Bereich wird zentriert dargestellt.
 25. Zukuenftig soll optional eine Sicherung alter Mod-Versionen vor dem Ueberschreiben moeglich sein.
+26. Spiele besitzen eine Standard-Installationsart (`subfolder` oder `direct`), die pro Mod geerbt oder ueberschrieben werden kann.
+27. Direkte Installationen kopieren den Inhalt ohne umschliessenden Workshop-ID-Ordner in das Mod-Verzeichnis.
+28. Dateimanifeste und ein Bestaetigungsdialog schuetzen vor unbemerkten Ueberschreibkonflikten.
 26. Dialogfenster werden zentriert ueber dem Hauptfenster angezeigt.
 
 ### Noch offen

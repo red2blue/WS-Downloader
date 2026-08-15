@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from .models import Game, Mod
+from .installer import INSTALL_MODE_INHERIT, INSTALL_MODE_SUBFOLDER, MOD_INSTALL_MODES, GAME_INSTALL_MODES
 
 
 def utc_now() -> str:
@@ -50,6 +51,11 @@ class GameStore:
                     game_name=str(item.get("game_name", "")),
                     workshop_url=str(item.get("workshop_url", "")),
                     mods_path=str(item.get("mods_path", "")),
+                    install_mode=(
+                        str(item.get("install_mode", INSTALL_MODE_SUBFOLDER))
+                        if str(item.get("install_mode", INSTALL_MODE_SUBFOLDER)) in GAME_INSTALL_MODES
+                        else INSTALL_MODE_SUBFOLDER
+                    ),
                     created_at=str(item.get("created_at", utc_now())),
                     updated_at=str(item.get("updated_at", utc_now())),
                 )
@@ -68,6 +74,7 @@ class GameStore:
                     "game_name": game.game_name,
                     "workshop_url": game.workshop_url,
                     "mods_path": game.mods_path,
+                    "install_mode": game.install_mode,
                     "created_at": game.created_at,
                     "updated_at": game.updated_at,
                 }
@@ -147,6 +154,7 @@ class Database:
                     game_id TEXT NOT NULL,
                     workshop_item_id TEXT NOT NULL,
                     install_folder_name TEXT NOT NULL DEFAULT '',
+                    install_mode TEXT NOT NULL DEFAULT 'inherit',
                     mod_name TEXT NOT NULL,
                     mod_url TEXT NOT NULL,
                     mod_version TEXT NOT NULL DEFAULT '',
@@ -165,6 +173,8 @@ class Database:
             mod_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(mods)").fetchall()}
             if "install_folder_name" not in mod_columns:
                 conn.execute("ALTER TABLE mods ADD COLUMN install_folder_name TEXT NOT NULL DEFAULT ''")
+            if "install_mode" not in mod_columns:
+                conn.execute("ALTER TABLE mods ADD COLUMN install_mode TEXT NOT NULL DEFAULT 'inherit'")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS downloads (
@@ -245,6 +255,7 @@ class Database:
                     UPDATE mods
                     SET mod_name = ?,
                         install_folder_name = ?,
+                        install_mode = ?,
                         mod_url = ?,
                         mod_version = ?,
                         compatible_game_version = ?,
@@ -259,6 +270,7 @@ class Database:
                     (
                         mod.mod_name,
                         mod.install_folder_name,
+                        mod.install_mode,
                         mod.mod_url,
                         mod.mod_version,
                         mod.compatible_game_version,
@@ -275,15 +287,16 @@ class Database:
             cursor = conn.execute(
                 """
                 INSERT INTO mods(
-                    game_id, workshop_item_id, install_folder_name, mod_name, mod_url, mod_version,
+                    game_id, workshop_item_id, install_folder_name, install_mode, mod_name, mod_url, mod_version,
                     compatible_game_version, new_version_available, remote_updated_at,
                     last_downloaded_at, download_status, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mod.game_id,
                     mod.workshop_item_id,
                     mod.install_folder_name,
+                    mod.install_mode,
                     mod.mod_name,
                     mod.mod_url,
                     mod.mod_version,
@@ -385,6 +398,7 @@ class Database:
                 SET game_id = ?,
                     workshop_item_id = ?,
                     install_folder_name = ?,
+                    install_mode = ?,
                     mod_name = ?,
                     mod_url = ?,
                     mod_version = ?,
@@ -402,6 +416,7 @@ class Database:
                     mod.game_id,
                     mod.workshop_item_id,
                     mod.install_folder_name,
+                    mod.install_mode,
                     mod.mod_name,
                     mod.mod_url,
                     mod.mod_version,
@@ -462,6 +477,11 @@ class Database:
             game_id=str(row["game_id"]),
             workshop_item_id=str(row["workshop_item_id"]),
             install_folder_name=str(row["install_folder_name"]),
+            install_mode=(
+                str(row["install_mode"])
+                if str(row["install_mode"]) in MOD_INSTALL_MODES
+                else INSTALL_MODE_INHERIT
+            ),
             mod_name=str(row["mod_name"]),
             mod_url=str(row["mod_url"]),
             mod_version=str(row["mod_version"]),
@@ -481,6 +501,7 @@ def create_mod(
     game_id: str,
     workshop_item_id: str,
     install_folder_name: str = "",
+    install_mode: str = INSTALL_MODE_INHERIT,
     mod_url: str,
     mod_name: str,
     mod_version: str = "",
@@ -499,6 +520,7 @@ def create_mod(
         game_id=game_id,
         workshop_item_id=workshop_item_id,
         install_folder_name=install_folder_name,
+        install_mode=install_mode if install_mode in MOD_INSTALL_MODES else INSTALL_MODE_INHERIT,
         mod_name=mod_name,
         mod_url=mod_url,
         mod_version=mod_version,

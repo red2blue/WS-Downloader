@@ -15,6 +15,7 @@ $scratchDist = Join-Path $scratchRoot "dist"
 
 $requiredSources = @(
     (Join-Path $repoRoot "main.py"),
+    (Join-Path $repoRoot "ws_downloader\installer.py"),
     (Join-Path $repoRoot "ws_downloader\steamcmd.py"),
     (Join-Path $repoRoot "ws_downloader\ui.py")
 )
@@ -24,7 +25,7 @@ foreach ($source in $requiredSources) {
     }
 }
 
-python -B -c "import ws_downloader.steamcmd; import ws_downloader.ui"
+python -B -c "import ws_downloader.installer; import ws_downloader.steamcmd; import ws_downloader.ui"
 if ($LASTEXITCODE -ne 0) {
     throw "Application imports failed. Build aborted."
 }

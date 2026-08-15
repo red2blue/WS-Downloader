@@ -17,6 +17,13 @@ from tkinter import ttk
 
 from .config import APP_NAME, APP_VERSION, get_app_paths
 from .i18n import DEFAULT_LANGUAGE, TranslationManager
+from .installer import (
+    INSTALL_MODE_DIRECT,
+    INSTALL_MODE_INHERIT,
+    INSTALL_MODE_SUBFOLDER,
+    InstallConflict,
+    ModInstaller,
+)
 from .metadata import derive_workshop_item_url, derive_workshop_url, fetch_public_app_name, fetch_workshop_metadata
 from .models import Game, Mod
 from .steamcmd import SteamCMDManager
@@ -173,6 +180,12 @@ class GameDialog:
 
         self.appid_var = StringVar(value=str(game.steam_app_id) if game else "")
         self.mods_path_var = StringVar(value=game.mods_path if game else "")
+        self.install_mode_labels = {
+            INSTALL_MODE_SUBFOLDER: self.tr("install_mode.subfolder"),
+            INSTALL_MODE_DIRECT: self.tr("install_mode.direct"),
+        }
+        selected_mode = game.install_mode if game else INSTALL_MODE_SUBFOLDER
+        self.install_mode_var = StringVar(value=self.install_mode_labels[selected_mode])
 
         self._build_ui()
 
@@ -196,12 +209,27 @@ class GameDialog:
             if readonly and self.is_edit:
                 entry.state(["readonly"])
 
+        install_mode_row = len(rows)
+        ttk.Label(frame, text=self.tr("dialog.game.install_mode")).grid(
+            row=install_mode_row, column=0, sticky="w", pady=4
+        )
+        ttk.Combobox(
+            frame,
+            textvariable=self.install_mode_var,
+            values=list(self.install_mode_labels.values()),
+            state="readonly",
+            width=45,
+        ).grid(row=install_mode_row, column=1, columnspan=2, sticky="ew", pady=4)
+
+        ttk.Label(frame, text=self.tr("dialog.game.install_mode_help"), justify="left").grid(
+            row=install_mode_row + 1, column=0, columnspan=3, sticky="w", pady=(2, 0)
+        )
         ttk.Label(frame, text=self.tr("dialog.game.derived_info")).grid(
-            row=len(rows), column=0, columnspan=3, sticky="w", pady=(6, 0)
+            row=install_mode_row + 2, column=0, columnspan=3, sticky="w", pady=(6, 0)
         )
 
         button_row = ttk.Frame(frame)
-        button_row.grid(row=len(rows) + 1, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        button_row.grid(row=install_mode_row + 3, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(button_row, text=self.tr("buttons.cancel"), command=self._cancel).pack(side=RIGHT, padx=(8, 0))
         ttk.Button(button_row, text=self.tr("buttons.save"), command=self._save).pack(side=RIGHT)
         frame.columnconfigure(1, weight=1)
@@ -224,7 +252,10 @@ class GameDialog:
         if not mods_path:
             messagebox.showerror(APP_NAME, self.tr("message.mods_path_required"), parent=self.window)
             return
-        self.result = {"steam_app_id": app_id_text, "mods_path": mods_path}
+        install_mode = next(
+            mode for mode, label in self.install_mode_labels.items() if label == self.install_mode_var.get()
+        )
+        self.result = {"steam_app_id": app_id_text, "mods_path": mods_path, "install_mode": install_mode}
         self.window.destroy()
 
     def _cancel(self) -> None:
@@ -249,6 +280,13 @@ class ModDialog:
         self.item_id_var = StringVar(value=mod.workshop_item_id if mod else "")
         self.install_folder_name_var = StringVar(value=mod.install_folder_name if mod else "")
         self.install_folder_mode_var = StringVar()
+        self.install_mode_labels = {
+            INSTALL_MODE_INHERIT: self.tr("install_mode.inherit"),
+            INSTALL_MODE_SUBFOLDER: self.tr("install_mode.subfolder"),
+            INSTALL_MODE_DIRECT: self.tr("install_mode.direct"),
+        }
+        selected_mode = mod.install_mode if mod else INSTALL_MODE_INHERIT
+        self.install_mode_var = StringVar(value=self.install_mode_labels[selected_mode])
 
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill=BOTH, expand=True)
@@ -266,9 +304,20 @@ class ModDialog:
         ttk.Label(frame, textvariable=self.install_folder_mode_var).grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
         )
+        ttk.Label(frame, text=self.tr("dialog.mod.install_mode")).grid(row=4, column=0, sticky="w", pady=(8, 4))
+        ttk.Combobox(
+            frame,
+            textvariable=self.install_mode_var,
+            values=list(self.install_mode_labels.values()),
+            state="readonly",
+            width=51,
+        ).grid(row=4, column=1, columnspan=2, sticky="ew", pady=(8, 4))
+        ttk.Label(frame, text=self.tr("dialog.mod.install_mode_help"), justify="left").grid(
+            row=5, column=0, columnspan=3, sticky="w", pady=(2, 0)
+        )
 
         button_row = ttk.Frame(frame)
-        button_row.grid(row=4, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        button_row.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(button_row, text=self.tr("buttons.cancel"), command=self._cancel).pack(side=RIGHT, padx=(8, 0))
         ttk.Button(button_row, text=self.tr("buttons.save"), command=self._save).pack(side=RIGHT)
         frame.columnconfigure(1, weight=1)
@@ -332,6 +381,9 @@ class ModDialog:
         self.result = {
             "workshop_item_id": item_id,
             "install_folder_name": install_folder_name,
+            "install_mode": next(
+                mode for mode, label in self.install_mode_labels.items() if label == self.install_mode_var.get()
+            ),
         }
         self.window.destroy()
 
@@ -417,7 +469,7 @@ class App(Tk):
         self.i18n = TranslationManager(self._initial_language())
         self.tr = self.i18n.translate
         self.games = GameStore(self.paths.games_path)
-        self.output_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.output_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.current_game: Game | None = None
         self.current_game_id: str | None = self.db.get_setting("last_selected_game_id", "")
         self.checked_mod_ids: set[int] = set()
@@ -426,6 +478,7 @@ class App(Tk):
         self._steamcmd_update_running = False
         self._steamcmd_install_running = False
         self._tooltips: list[Tooltip] = []
+        self.mod_installer = ModInstaller(self.paths.manifests_dir)
 
         saved_steamcmd = self.db.get_setting("steamcmd_path", "")
         self.steamcmd_manager = SteamCMDManager(saved_steamcmd)
@@ -845,7 +898,7 @@ class App(Tk):
             selected or (self.tr("mod.selected.yes") if mod.id in self.checked_mod_ids else self.tr("mod.selected.no")),
             mod.mod_name,
             mod.workshop_item_id,
-            mod.install_folder_name or mod.workshop_item_id,
+            self._mod_install_target_text(mod),
             mod.mod_version,
             mod.remote_updated_at,
             mod.compatible_game_version,
@@ -900,6 +953,18 @@ class App(Tk):
 
         return mod.install_folder_name.strip() or mod.workshop_item_id
 
+    def _effective_install_mode(self, game: Game, mod: Mod) -> str:
+        """Return the resolved installation mode for a mod."""
+
+        return self.mod_installer.effective_mode(game.install_mode, mod.install_mode)
+
+    def _mod_install_target_text(self, mod: Mod) -> str:
+        """Return a concise localized target description for the mod table."""
+
+        if self.current_game and self._effective_install_mode(self.current_game, mod) == INSTALL_MODE_DIRECT:
+            return self.tr("install_mode.direct_short")
+        return self._effective_install_folder_name(mod)
+
     def _mod_install_path(self, game: Game, mod: Mod) -> Path:
         """Return the configured on-disk install path for a mod."""
 
@@ -907,6 +972,12 @@ class App(Tk):
 
     def _rename_installed_mod_folder_if_needed(self, game: Game, old_mod: Mod, new_mod: Mod) -> None:
         """Rename an already installed mod folder when the target folder name changes."""
+
+        if (
+            self._effective_install_mode(game, old_mod) != INSTALL_MODE_SUBFOLDER
+            or self._effective_install_mode(game, new_mod) != INSTALL_MODE_SUBFOLDER
+        ):
+            return
 
         old_path = self._mod_install_path(game, old_mod)
         new_path = self._mod_install_path(game, new_mod)
@@ -922,6 +993,8 @@ class App(Tk):
         """Align on-disk mod folders with configured custom target folder names."""
 
         for mod in mods:
+            if self._effective_install_mode(game, mod) != INSTALL_MODE_SUBFOLDER:
+                continue
             if not mod.install_folder_name.strip():
                 continue
             legacy_id_mod = replace(mod, install_folder_name="")
@@ -1042,6 +1115,7 @@ class App(Tk):
             return
         app_id = int(dialog.result["steam_app_id"])
         mods_path = dialog.result["mods_path"]
+        install_mode = dialog.result["install_mode"]
         game_id = game_id_from_appid(app_id)
         self._append_log(f"[add-game] requested app_id={app_id} mods_path={mods_path}")
         if self.games.get_game(game_id):
@@ -1056,6 +1130,7 @@ class App(Tk):
                 game_name="",
                 workshop_url=derive_workshop_url(app_id),
                 mods_path=mods_path,
+                install_mode=install_mode,
                 created_at=utc_now(),
                 updated_at=utc_now(),
             )
@@ -1084,12 +1159,14 @@ class App(Tk):
             return
         app_id = int(dialog.result["steam_app_id"])
         mods_path = dialog.result["mods_path"]
+        install_mode = dialog.result["install_mode"]
         if app_id != game.steam_app_id:
             messagebox.showerror(APP_NAME, self.tr("message.change_appid_not_supported"), parent=self)
             return
         updated = replace(
             game,
             mods_path=mods_path,
+            install_mode=install_mode,
             workshop_url=derive_workshop_url(app_id),
             updated_at=utc_now(),
         )
@@ -1129,6 +1206,7 @@ class App(Tk):
             return
         workshop_item_id = dialog.result["workshop_item_id"]
         install_folder_name = dialog.result["install_folder_name"]
+        install_mode = dialog.result["install_mode"]
         url = derive_workshop_item_url(workshop_item_id)
         metadata = fetch_workshop_metadata(workshop_item_id)
         mod_name = metadata.title if metadata else self.tr("mod.fallback.workshop", workshop_item_id=workshop_item_id)
@@ -1138,6 +1216,7 @@ class App(Tk):
             game_id=self.current_game.id,
             workshop_item_id=workshop_item_id,
             install_folder_name=install_folder_name,
+            install_mode=install_mode,
             mod_url=url,
             mod_name=mod_name,
             mod_version=remote_updated_at,
@@ -1173,6 +1252,7 @@ class App(Tk):
             return
         workshop_item_id = dialog.result["workshop_item_id"]
         install_folder_name = dialog.result["install_folder_name"]
+        install_mode = dialog.result["install_mode"]
         url = derive_workshop_item_url(workshop_item_id)
         metadata = fetch_workshop_metadata(workshop_item_id)
         mod_name = metadata.title if metadata else mod.mod_name
@@ -1182,6 +1262,7 @@ class App(Tk):
             mod,
             workshop_item_id=workshop_item_id,
             install_folder_name=install_folder_name,
+            install_mode=install_mode,
             mod_url=url,
             mod_name=mod_name,
             mod_version=mod.mod_version or remote_updated_at,
@@ -1208,6 +1289,27 @@ class App(Tk):
             return
         if not messagebox.askyesno(APP_NAME, self.tr("message.delete_mod", mod_name=mod.mod_name), parent=self):
             return
+        if (
+            self.current_game
+            and self.mod_installer.has_manifest(
+                self.current_game.id,
+                mod.workshop_item_id,
+                Path(self.current_game.mods_path),
+            )
+            and messagebox.askyesno(
+                APP_NAME,
+                self.tr("message.remove_installed_mod_files", mod_name=mod.mod_name),
+                parent=self,
+            )
+        ):
+            removed_count = self.mod_installer.uninstall(
+                self.current_game.id,
+                mod.workshop_item_id,
+                Path(self.current_game.mods_path),
+            )
+            self._append_log(
+                self.tr("log.mod_files_removed", mod_name=mod.mod_name, count=removed_count)
+            )
         self.db.delete_mod(mod.id)
         self.checked_mod_ids.discard(mod.id)
         self._append_log(self.tr("log.mod_deleted", mod_name=mod.mod_name))
@@ -1291,6 +1393,31 @@ class App(Tk):
         self.status_var.set(self.tr("status.download_started", mode=self.tr(f"buttons.{mode}")))
         thread.start()
 
+    def _confirm_direct_install_conflicts(self, mod_name: str, conflicts: list[InstallConflict]) -> bool:
+        """Ask on the Tk thread whether a direct install may overwrite files."""
+
+        detail_lines = []
+        for conflict in conflicts[:12]:
+            owners = ", ".join(
+                self.tr(f"install_conflict.{owner}") if owner in {"existing", "unsafe"} else owner
+                for owner in conflict.owners
+            )
+            detail_lines.append(f"- {conflict.relative_path} ({owners})")
+        if len(conflicts) > 12:
+            detail_lines.append(self.tr("install_conflict.more", count=len(conflicts) - 12))
+        request = {
+            "event": threading.Event(),
+            "result": False,
+            "message": self.tr(
+                "message.direct_install_conflicts",
+                mod_name=mod_name,
+                conflicts="\n".join(detail_lines),
+            ),
+        }
+        self.output_queue.put(("confirm_install_conflicts", request))
+        request["event"].wait()
+        return bool(request["result"])
+
     def _download_worker(self, game: Game, mods: list[Mod], mode: str) -> None:
         """Run SteamCMD downloads in the background and persist outcomes."""
 
@@ -1341,15 +1468,33 @@ class App(Tk):
                     download_error = ""
                 success = not download_error
                 if success:
-                    target_path = steamcmd.move_downloaded_mod(
-                        temp_install_dir,
-                        Path(game.mods_path),
-                        game.steam_app_id,
-                        mod.workshop_item_id,
-                        mod.install_folder_name,
+                    install_mode = self._effective_install_mode(game, mod)
+                    mods_path = Path(game.mods_path)
+                    if install_mode == INSTALL_MODE_DIRECT:
+                        conflicts = self.mod_installer.find_direct_conflicts(
+                            source_path,
+                            mods_path,
+                            game.id,
+                            mod.workshop_item_id,
+                        )
+                        if conflicts and not self._confirm_direct_install_conflicts(mod_name, conflicts):
+                            raise RuntimeError(self.tr("error.direct_install_cancelled"))
+                    target_folder_name = self._effective_install_folder_name(mod)
+                    target_path = self.mod_installer.install(
+                        source_path=source_path,
+                        mods_path=mods_path,
+                        game_id=game.id,
+                        workshop_item_id=mod.workshop_item_id,
+                        mode=install_mode,
+                        target_folder_name=target_folder_name,
                     )
                     legacy_id_path = Path(game.mods_path) / mod.workshop_item_id
-                    if mod.install_folder_name and legacy_id_path != target_path and legacy_id_path.exists():
+                    if (
+                        install_mode == INSTALL_MODE_SUBFOLDER
+                        and mod.install_folder_name
+                        and legacy_id_path != target_path
+                        and legacy_id_path.exists()
+                    ):
                         shutil.rmtree(legacy_id_path)
                     stored_version = remote_updated_at or finished_at or mod.mod_version
                     self.db.update_mod_download_result(
@@ -1429,6 +1574,17 @@ class App(Tk):
                     self._set_steamcmd_path(Path(payload))
                     self.status_var.set(self.tr("status.steamcmd_set", path=self.steamcmd_path))
                     self._append_log(self.tr("log.steamcmd_configured", path=self.steamcmd_path))
+                elif kind == "confirm_install_conflicts":
+                    request = payload
+                    try:
+                        request["result"] = messagebox.askyesno(
+                            APP_NAME,
+                            request["message"],
+                            parent=self,
+                            icon="warning",
+                        )
+                    finally:
+                        request["event"].set()
                 elif kind == "status":
                     self.status_var.set(payload)
         except queue.Empty:

@@ -11,9 +11,10 @@ Das Tool richtet sich an Spiele, bei denen Workshop-Mods lokal in einen bestimmt
 1. `WS Downloader.exe` starten.
 2. SteamCMD konfigurieren. Wenn SteamCMD fehlt, kann es ueber den Button `SteamCMD installieren` automatisch in den App-Datenordner geladen und eingerichtet werden.
 3. Spiel mit Steam-App-ID und lokalem Mod-Ordner anlegen.
-4. Mods ueber Workshop-ID hinzufuegen.
-5. Optional einen lokalen Zielordnernamen setzen, wenn das Spiel nicht die Workshop-ID als Ordnernamen erwartet.
-6. Mods auswaehlen und herunterladen oder auf Updates pruefen.
+4. Installationsart des Spiels festlegen: eigener Unterordner pro Mod oder Inhalt direkt in den Mod-Ordner.
+5. Mods ueber Workshop-ID hinzufuegen.
+6. Optional Installationsart und lokalen Zielordner fuer einzelne Mods abweichend konfigurieren.
+7. Mods auswaehlen und herunterladen oder auf Updates pruefen.
 
 ## Funktionen
 
@@ -22,6 +23,11 @@ Das Tool richtet sich an Spiele, bei denen Workshop-Mods lokal in einen bestimmt
 - Automatische SteamCMD-Pruefung durch Starten von `steamcmd +quit`; SteamCMD aktualisiert sich dabei selbst, wenn ein Update vorliegt.
 - Automatische SteamCMD-Installation ueber den offiziellen Windows-Installer-Zip.
 - Benutzerdefinierte lokale Zielordnernamen pro Mod.
+- Spielweiter Standard fuer Installationen im eigenen Unterordner oder direkt im Mod-Verzeichnis.
+- Optionale Installationsart pro Mod: Spieleinstellung, eigener Unterordner oder direkte Installation.
+- Dateimanifeste zur Zuordnung direkt installierter Dateien zur Workshop-ID.
+- Konfliktwarnung vor dem Ueberschreiben vorhandener oder von anderen Mods verwalteter Dateien.
+- Optionales Entfernen der laut Manifest zu einer Mod gehoerenden Dateien beim Loeschen des Mod-Eintrags.
 - Uebernahme eines Dateinamens als Zielordnername ohne Dateiendung.
 - Auswahl aller sichtbaren Mods ueber `+/-`.
 - Markierung von Mods mit verfuegbarer neuer Version.
@@ -32,6 +38,9 @@ Das Tool richtet sich an Spiele, bei denen Workshop-Mods lokal in einen bestimmt
 - Fuer den Download ist eine Internetverbindung erforderlich.
 - SteamCMD kann je nach Spiel anonyme Workshop-Downloads erlauben oder ablehnen. Das ist eine Steam-/Spiel-Einschraenkung.
 - Die Zuordnung zur Workshop-ID bleibt gespeichert, auch wenn lokal ein anderer Zielordnername verwendet wird.
+- Bestehende Spiele verwenden nach dem Update weiterhin automatisch einen eigenen Unterordner pro Mod.
+- Bei direkter Installation koennen mehrere Mods dieselben Dateien verwenden. Vor dem Ueberschreiben zeigt WS Downloader die erkannten Konflikte an und verlangt eine Bestaetigung.
+- Installationsmanifeste werden im App-Datenordner unter `install_manifests` gespeichert.
 
 ## KI-Unterstuetzung und Haftung
 

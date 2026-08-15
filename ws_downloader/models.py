@@ -15,6 +15,7 @@ class Game:
     game_name: str
     workshop_url: str
     mods_path: str
+    install_mode: str
     created_at: str
     updated_at: str
 
@@ -27,6 +28,7 @@ class Mod:
     game_id: str
     workshop_item_id: str
     install_folder_name: str
+    install_mode: str
     mod_name: str
     mod_url: str
     mod_version: str
